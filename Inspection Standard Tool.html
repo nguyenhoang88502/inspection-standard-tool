@@ -745,27 +745,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           sourceHeight,
           bounds
         );
-        const columnAnchor = inspectionNativeColumnAnchor(
-          worksheet,
-          bounds.start.col,
-          placement.leftOffset
-        );
-        const rowAnchor = inspectionNativeRowAnchor(
-          worksheet,
-          bounds.start.row,
-          placement.topOffset
-        );
-        const anchor = {
-          tl: {
-            ...columnAnchor,
-            ...rowAnchor
-          },
-          ext: {
-            width: placement.width,
-            height: placement.height
-          },
-          editAs: "oneCell"
-        };
+        const anchor = rangeToTwoCellAnchor(worksheet, range);
         worksheet.addImage(imageId, anchor);
         return {
           ...placement,
@@ -979,7 +959,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       );
       window.__inspectionFieldDefinitions = Object.fromEntries(INSPECTION_FIELD_DEFINITIONS);
 
-      function inspectionFieldDefinition(slot) {
+      inspectionFieldDefinition = function inspectionCentralFieldDefinition(slot) {
         return INSPECTION_FIELD_DEFINITIONS.get(slot.templateKey) || {
           displayName: slot.label,
           category: "Inspection image",
@@ -988,7 +968,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           range: slot.range,
           bomMode: "manual"
         };
-      }
+      };
 
       function inspectionHighlightWorkbookKey(workbookKey, scrollToCard = false) {
         document.querySelectorAll(".inspection-link-highlight").forEach(node => {
@@ -996,7 +976,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         });
         const escapedKey = CSS.escape(workbookKey);
         const card = document.querySelector(
-          `.slot-card[data-workbook-key="${escapedKey}"]`
+          `.slot-card[data-workbook-key="${escapedKey}"], ` +
+          `.inspection-table__row[data-workbook-key="${escapedKey}"]`
         );
         const requirements = document.querySelectorAll(
           `.inspection-bom-requirement[data-workbook-key="${escapedKey}"]`
@@ -1249,9 +1230,17 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
         const startDrag = (event, imageId) => {
           window.__inspectionDragImageId = imageId;
+          event.dataTransfer.setData(
+            INSPECTION_ASSET_DRAG_TYPE,
+            imageId
+          );
+          event.dataTransfer.setData(
+            INSPECTION_ASSET_SOURCE_TYPE,
+            "uploaded"
+          );
           event.dataTransfer.setData(Iy, imageId);
           event.dataTransfer.setData("text/plain", imageId);
-          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.effectAllowed = "copyMove";
         };
         return mt.jsx("div", {
           className:
@@ -1766,6 +1755,3418 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       `;
       document.head.appendChild(inspectionPlacementUiStyle);
 
+      /*
+       * Master dense-workspace and lightweight-XLSX refactor.
+       *
+       * This remains inside the existing self-contained module so the app keeps
+       * using the bundled React, ExcelJS, JSZip, and smartcrop implementations.
+       */
+      var SLOT_DEFINITIONS = {
+        ib: {
+          id: "ib", displayName: "Instruction Book", category: "Documents",
+          section: "manuals", workbookKey: "ib", requiredByDefault: false,
+          maximumSourceImages: 1
+        },
+        safety: {
+          id: "safety", displayName: "Safety Sheet", category: "Documents",
+          section: "manuals", workbookKey: "safety", requiredByDefault: false,
+          maximumSourceImages: 1
+        },
+        acessory_bag: {
+          id: "acessory_bag",
+          displayName: "Accessory Bag / Pouch / Case",
+          category: "Accessories", section: "manuals",
+          workbookKey: "acessory_bag", requiredByDefault: false,
+          maximumSourceImages: 1
+        },
+        accessory_1: {
+          id: "accessory_1", displayName: "Accessory 1",
+          category: "Accessories", section: "manuals",
+          workbookKey: "accessory_1", maximumSourceImages: 1
+        },
+        accessory_2: {
+          id: "accessory_2", displayName: "Accessory 2",
+          category: "Accessories", section: "manuals",
+          workbookKey: "accessory_2", maximumSourceImages: 1
+        },
+        accessory_3: {
+          id: "accessory_3", displayName: "Accessory 3",
+          category: "Accessories", section: "manuals",
+          workbookKey: "accessory_3", maximumSourceImages: 1
+        },
+        trimmer_hdpe: {
+          id: "trimmer_hdpe", displayName: "Trimmer HDPE / Internal Bag",
+          category: "Internal Packaging", section: "manuals",
+          workbookKey: "trimmer_hdpe", maximumSourceImages: 1
+        },
+        fg_colorbox_front: {
+          id: "fg_colorbox_front", displayName: "FG Colorbox Front",
+          category: "Retail Colorbox", section: "packaging",
+          workbookKey: "fg_colorbox_front", maximumSourceImages: 1
+        },
+        "trimmer_front & trimmer_back": {
+          id: "trimmer_front & trimmer_back",
+          displayName: "Trimmer Front & Back", category: "Finished Good",
+          section: "packaging", workbookKey: "trimmer_front & trimmer_back",
+          maximumSourceImages: 2, internalInputs: ["Front", "Back"]
+        },
+        pad_print: {
+          id: "pad_print", displayName: "Pad Print",
+          category: "Product Marking", section: "packaging",
+          workbookKey: "pad_print", maximumSourceImages: 1
+        },
+        lazer_actual: {
+          id: "lazer_actual", displayName: "Laser Actual",
+          category: "Product Marking", section: "packaging",
+          workbookKey: "lazer_actual", maximumSourceImages: 1
+        },
+        "colorbox_front & colorbox_back": {
+          id: "colorbox_front & colorbox_back",
+          displayName: "Colorbox Front & Back",
+          category: "Retail Colorbox", section: "labels",
+          workbookKey: "colorbox_front & colorbox_back",
+          maximumSourceImages: 2, internalInputs: ["Front", "Back"],
+          linkedInputs: {
+            Front: { slotId: "fg_colorbox_front", imageIndex: 0 }
+          }
+        },
+        "colorbox_left & colorbox_right": {
+          id: "colorbox_left & colorbox_right",
+          displayName: "Colorbox Left & Right",
+          category: "Retail Colorbox", section: "labels",
+          workbookKey: "colorbox_left & colorbox_right",
+          maximumSourceImages: 2, internalInputs: ["Left", "Right"]
+        },
+        "colorbox_top & colorbox_bottom": {
+          id: "colorbox_top & colorbox_bottom",
+          displayName: "Colorbox Top & Bottom",
+          category: "Retail Colorbox", section: "labels",
+          workbookKey: "colorbox_top & colorbox_bottom",
+          maximumSourceImages: 2, internalInputs: ["Top", "Bottom"]
+        },
+        lable_1: {
+          id: "lable_1", displayName: "Colorbox Label",
+          category: "Retail Label", section: "labels",
+          workbookKey: "lable_1", maximumSourceImages: 1
+        },
+        items_inside_colorbox: {
+          id: "items_inside_colorbox",
+          displayName: "Items Inside Colorbox",
+          category: "Retail Packing Arrangement", section: "labels",
+          workbookKey: "items_inside_colorbox", maximumSourceImages: 1
+        },
+        colorbox_tape: {
+          id: "colorbox_tape",
+          displayName: "Colorbox Tape / Seal / Fold",
+          category: "Retail Packing Method", section: "labels",
+          workbookKey: "colorbox_tape", maximumSourceImages: 1
+        },
+        colorboxes_packed_mastercarton: {
+          id: "colorboxes_packed_mastercarton",
+          displayName: "Colorboxes Packed in Master Carton",
+          category: "Master Carton Packing", section: "components",
+          workbookKey: "colorboxes_packed_mastercarton",
+          maximumSourceImages: 1
+        },
+        mastercarton_sides: {
+          id: "mastercarton_sides",
+          displayName: "Master Carton Left & Right",
+          category: "Master Carton", section: "components",
+          workbookKey: "mastercarton_sides",
+          maximumSourceImages: 2, internalInputs: ["Left", "Right"]
+        },
+        mastercarton_top_bottom: {
+          id: "mastercarton_top_bottom",
+          displayName: "Master Carton Top & Bottom",
+          category: "Master Carton", section: "components",
+          workbookKey: "mastercarton_top_bottom",
+          maximumSourceImages: 2, internalInputs: ["Top", "Bottom"]
+        },
+        mastercarton_front_back: {
+          id: "mastercarton_front_back",
+          displayName: "Master Carton Front & Back",
+          category: "Master Carton", section: "components",
+          workbookKey: "mastercarton_front_back",
+          maximumSourceImages: 2, internalInputs: ["Front", "Back"]
+        },
+        mastercaton_label: {
+          id: "mastercaton_label", displayName: "Master Carton Label",
+          category: "Shipping Label", section: "components",
+          workbookKey: "mastercaton_label", maximumSourceImages: 1
+        }
+      };
+
+      for (const slot of Uh) {
+        const definition = SLOT_DEFINITIONS[slot.templateKey];
+        if (!definition) continue;
+        definition.slotId = slot.id;
+        definition.assetKeys = [...slot.assetKeys];
+        definition.worksheet = slot.sheet;
+        definition.range =
+          INSPECTION_COVER_SLOT_RANGES[slot.templateKey] || slot.range;
+        definition.mergeDirection = slot.mergeDirection || null;
+        definition.bomMode = INSPECTION_BOM_LINKED_KEYS.has(slot.templateKey)
+          ? "bom"
+          : "manual";
+      }
+      window.SLOT_DEFINITIONS = SLOT_DEFINITIONS;
+      INSPECTION_FIELD_DEFINITIONS = new Map(
+        Object.values(SLOT_DEFINITIONS).map(definition => [
+          definition.workbookKey,
+          definition
+        ])
+      );
+      window.__inspectionFieldDefinitions =
+        Object.fromEntries(INSPECTION_FIELD_DEFINITIONS);
+
+      function inspectionFieldDefinition(slot) {
+        return SLOT_DEFINITIONS[slot.templateKey] || {
+          id: slot.id,
+          slotId: slot.id,
+          displayName: slot.label,
+          category: "Inspection image",
+          section: slot.section,
+          workbookKey: slot.templateKey,
+          worksheet: slot.sheet,
+          range: slot.range,
+          assetKeys: [...slot.assetKeys],
+          maximumSourceImages: slot.assetKeys.length,
+          requiredByDefault: true,
+          bomMode: "manual"
+        };
+      }
+
+      var INSPECTION_EXPORT_PROFILES = {
+        compact: {
+          id: "compact", label: "Compact", note: "smallest workbook",
+          photoQuality: 0.75, maxLongEdge: 900
+        },
+        balanced: {
+          id: "balanced", label: "Balanced", note: "recommended",
+          photoQuality: 0.82, maxLongEdge: 1200
+        },
+        high: {
+          id: "high", label: "High Detail", note: "larger workbook",
+          photoQuality: 0.9, maxLongEdge: 1600
+        }
+      };
+      var INSPECTION_EXPORT_SCALE_FACTOR = 1.5;
+      var INSPECTION_MIN_EXPORT_LONG_EDGE = 320;
+      var INSPECTION_XLSX_WARNING_BYTES = 25 * 1024 * 1024;
+      var INSPECTION_MEDIA_WARNING_BYTES = 20 * 1024 * 1024;
+      var INSPECTION_SINGLE_MEDIA_WARNING_BYTES = 2.5 * 1024 * 1024;
+      var INSPECTION_PNG_KEYS = new Set([
+        "ib", "safety", "lable_1", "mastercaton_label",
+        "pad_print", "lazer_actual"
+      ]);
+
+      function inspectionGetExportProfile() {
+        return INSPECTION_EXPORT_PROFILES[
+          window.__inspectionExportQuality || "balanced"
+        ] || INSPECTION_EXPORT_PROFILES.balanced;
+      }
+
+      function calculateContainRect({
+        sourceWidth,
+        sourceHeight,
+        targetWidth,
+        targetHeight,
+        allowUpscale = false,
+        marginRatio = 0.02
+      }) {
+        if (
+          sourceWidth <= 0 || sourceHeight <= 0 ||
+          targetWidth <= 0 || targetHeight <= 0
+        ) {
+          throw new Error("Invalid contain-fit dimensions.");
+        }
+        const marginX = targetWidth * marginRatio;
+        const marginY = targetHeight * marginRatio;
+        const availableWidth = Math.max(1, targetWidth - marginX * 2);
+        const availableHeight = Math.max(1, targetHeight - marginY * 2);
+        let scale = Math.min(
+          availableWidth / sourceWidth,
+          availableHeight / sourceHeight
+        );
+        if (!allowUpscale) scale = Math.min(scale, 1);
+        const width = sourceWidth * scale;
+        const height = sourceHeight * scale;
+        return {
+          x: (targetWidth - width) / 2,
+          y: (targetHeight - height) / 2,
+          width,
+          height,
+          scale
+        };
+      }
+
+      function rangeToTwoCellAnchor(
+        worksheet,
+        range,
+        inset = { left: 0.06, top: 0.08, right: 0.06, bottom: 0.08 }
+      ) {
+        if (!worksheet) throw new Error("Worksheet is required for anchoring.");
+        inspectionAssertValidRange(range, "drawing");
+        const coordinates = Ix(range);
+        const anchor = {
+          tl: {
+            col: coordinates.start.col - 1 + inset.left,
+            row: coordinates.start.row - 1 + inset.top
+          },
+          br: {
+            col: coordinates.end.col - inset.right,
+            row: coordinates.end.row - inset.bottom
+          },
+          editAs: "oneCell"
+        };
+        if (
+          anchor.br.col <= anchor.tl.col ||
+          anchor.br.row <= anchor.tl.row
+        ) {
+          throw new Error(`Invalid two-cell anchor for ${range}.`);
+        }
+        return anchor;
+      }
+
+      function inspectionResolveFinalRange(slot) {
+        if (slot.packedDestinationKey) {
+          return INSPECTION_COVER_SLOT_RANGES[slot.packedDestinationKey] ||
+            slot.range;
+        }
+        return slot.range ||
+          INSPECTION_COVER_SLOT_RANGES[slot.templateKey];
+      }
+
+      function inspectionApplyTopRowCompaction(workbook, worksheet) {
+        const compacted =
+          window.__inspectionCompactedWorkbooks ||
+          (window.__inspectionCompactedWorkbooks = new WeakSet());
+        if (compacted.has(workbook)) return;
+        const assignments = window.__inspectionCurrentAssignments || {};
+        const dynamicSlots = Uh.filter(slot => slot.section === "manuals");
+        const activeSlots = dynamicSlots.filter(slot =>
+          slot.assetKeys.some(assetKey => assignments[assetKey])
+        );
+        for (let index = 0; index < dynamicSlots.length; index += 1) {
+          const destination = dynamicSlots[index];
+          const source = activeSlots[index];
+          const cell = worksheet.getCell(destination.cell);
+          cell.value = source ? source.templateKey : null;
+        }
+        const report = inspectionCurrentExportReport();
+        report.compactionPlan = activeSlots.map((source, index) => ({
+          sourceWorkbookKey: source.templateKey,
+          destinationWorkbookKey: dynamicSlots[index].templateKey,
+          finalRange: dynamicSlots[index].range
+        }));
+        compacted.add(workbook);
+      }
+
+      function inspectionExportFormatForSlot(slot) {
+        return INSPECTION_PNG_KEYS.has(slot.templateKey)
+          ? { mimeType: "image/png", extension: "png", quality: undefined }
+          : {
+              mimeType: "image/jpeg",
+              extension: "jpeg",
+              quality: inspectionGetExportProfile().photoQuality
+            };
+      }
+
+      function inspectionExportLongEdge(slot, rangeBounds) {
+        const profile = inspectionGetExportProfile();
+        let categoryMaximum = profile.maxLongEdge;
+        if (slot.templateKey === "ib" || slot.templateKey === "safety") {
+          categoryMaximum = Math.min(categoryMaximum, 1200);
+        } else if (
+          slot.templateKey === "lable_1" ||
+          slot.templateKey === "mastercaton_label"
+        ) {
+          categoryMaximum = Math.min(
+            Math.max(categoryMaximum, 1200),
+            profile.id === "high" ? 1600 : 1400
+          );
+        } else if (/accessory/i.test(slot.templateKey)) {
+          categoryMaximum = Math.min(categoryMaximum, 800);
+        }
+        return Math.max(
+          INSPECTION_MIN_EXPORT_LONG_EDGE,
+          Math.min(
+            categoryMaximum,
+            Math.round(
+              Math.max(rangeBounds.width, rangeBounds.height) *
+              INSPECTION_EXPORT_SCALE_FACTOR
+            )
+          )
+        );
+      }
+
+      function inspectionCanvasToBlob(canvas, mimeType, quality) {
+        return new Promise((resolve, reject) => {
+          canvas.toBlob(
+            blob => blob
+              ? resolve(blob)
+              : reject(new Error("Failed to encode export image.")),
+            mimeType,
+            quality
+          );
+        });
+      }
+
+      async function inspectionPrepareContainedExportImage({
+        file,
+        slot,
+        rangeBounds
+      }) {
+        const image = await Nx(file);
+        const sourceWidth = image.naturalWidth || image.width;
+        const sourceHeight = image.naturalHeight || image.height;
+        const targetRatio = rangeBounds.width / rangeBounds.height;
+        const longEdge = inspectionExportLongEdge(slot, rangeBounds);
+        const canvas = document.createElement("canvas");
+        if (targetRatio >= 1) {
+          canvas.width = longEdge;
+          canvas.height = Math.max(1, Math.round(longEdge / targetRatio));
+        } else {
+          canvas.height = longEdge;
+          canvas.width = Math.max(1, Math.round(longEdge * targetRatio));
+        }
+        const context = canvas.getContext("2d", { alpha: true });
+        if (!context) throw new Error("Canvas rendering is not available.");
+        const format = inspectionExportFormatForSlot(slot);
+        context.fillStyle = "#ffffff";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        const contain = calculateContainRect({
+          sourceWidth,
+          sourceHeight,
+          targetWidth: canvas.width,
+          targetHeight: canvas.height,
+          allowUpscale: true,
+          marginRatio: 0.02
+        });
+        context.imageSmoothingEnabled = true;
+        context.imageSmoothingQuality = "high";
+        context.drawImage(
+          image,
+          contain.x,
+          contain.y,
+          contain.width,
+          contain.height
+        );
+        let blob;
+        try {
+          blob = await inspectionCanvasToBlob(
+            canvas,
+            format.mimeType,
+            format.quality
+          );
+        } catch (error) {
+          if (format.extension === "png") throw error;
+          blob = await inspectionCanvasToBlob(canvas, "image/png");
+          format.mimeType = "image/png";
+          format.extension = "png";
+          format.quality = undefined;
+        }
+        const buffer = await blob.arrayBuffer();
+        canvas.width = 1;
+        canvas.height = 1;
+        return {
+          buffer,
+          blob,
+          extension: format.extension,
+          mimeType: format.mimeType,
+          width: contain.width,
+          height: contain.height,
+          canvasWidth: Math.max(1, Math.round(
+            targetRatio >= 1 ? longEdge : longEdge * targetRatio
+          )),
+          canvasHeight: Math.max(1, Math.round(
+            targetRatio >= 1 ? longEdge / targetRatio : longEdge
+          )),
+          sourceWidth,
+          sourceHeight,
+          sourceByteLength: file.size || 0,
+          finalByteLength: buffer.byteLength,
+          release() {
+            this.blob = null;
+            this.buffer = null;
+          }
+        };
+      }
+
+      async function inspectionHashBuffer(buffer) {
+        if (globalThis.crypto?.subtle) {
+          const digest = await globalThis.crypto.subtle.digest(
+            "SHA-256",
+            buffer
+          );
+          return [...new Uint8Array(digest)]
+            .map(value => value.toString(16).padStart(2, "0"))
+            .join("");
+        }
+        let hash = 2166136261;
+        for (const value of new Uint8Array(buffer)) {
+          hash ^= value;
+          hash = Math.imul(hash, 16777619);
+        }
+        return `fnv-${(hash >>> 0).toString(16)}`;
+      }
+
+      inspectionCreateExportReport = function inspectionCreateDetailedExportReport() {
+        return {
+          assignedSlots: [],
+          preparedImages: [],
+          insertedImages: [],
+          skippedImages: [],
+          errors: [],
+          uniqueMediaImages: 0,
+          reusedMediaReferences: 0,
+          originalTotalImageBytes: 0,
+          optimizedTotalImageBytes: 0,
+          finalXlsxByteSize: 0,
+          sourceAssets: new Set(),
+          warnings: []
+        };
+      };
+
+      dg = async function inspectionLoadActiveTemplate(forceReload = false) {
+        if (hg && !forceReload) return hg;
+        if (forceReload) {
+          window.__inspectionCoverExportReport = inspectionCreateExportReport();
+          window.__inspectionWorkbookMediaCache = new Map();
+          inspectionShowCoverResult("Preparing optimized COVER export...", false);
+        }
+        const templateBytes = await Rx();
+        const workbook = new Tx.Workbook();
+        await workbook.xlsx.load(templateBytes);
+        const cover = workbook.getWorksheet(INSPECTION_ACTIVE_TEMPLATE.worksheet);
+        if (!cover) throw new Error('Worksheet "COVER" was not found.');
+        await validateTemplateWorkbook(workbook);
+        if (!forceReload) hg = workbook;
+        return workbook;
+      };
+
+      qk = async function inspectionInsertTwoCellAssignmentImage(
+        workbook,
+        slot,
+        finalImage
+      ) {
+        const report = inspectionCurrentExportReport();
+        const worksheetName = slot.sheet === "COVER"
+          ? INSPECTION_ACTIVE_TEMPLATE.worksheet
+          : slot.sheet;
+        const targetRange = inspectionResolveFinalRange(slot);
+        inspectionAssertValidRange(targetRange, slot.id);
+        const worksheet = workbook.getWorksheet(worksheetName);
+        if (!worksheet) {
+          throw new Error(`Worksheet "${worksheetName}" was not found.`);
+        }
+        if (worksheetName === INSPECTION_ACTIVE_TEMPLATE.worksheet) {
+          inspectionApplyTopRowCompaction(workbook, worksheet);
+        }
+        const item = {
+          slotId: slot.id,
+          workbookKey: slot.templateKey,
+          worksheet: worksheetName,
+          targetRange,
+          sourceImageCount: finalImage.__sourceImageCount || 1,
+          finalMimeType: null,
+          finalByteLength: 0,
+          imageId: null,
+          insertionStatus: "preparing"
+        };
+        report.assignedSlots.push(item);
+        try {
+          const rangeBounds = inspectionRangePixelBounds(
+            worksheet,
+            targetRange
+          );
+          const prepared = await inspectionPrepareContainedExportImage({
+            file: finalImage,
+            slot,
+            rangeBounds
+          });
+          const mediaKey = await inspectionHashBuffer(prepared.buffer);
+          const mediaCache = window.__inspectionWorkbookMediaCache ||
+            (window.__inspectionWorkbookMediaCache = new Map());
+          let imageId = mediaCache.get(mediaKey);
+          if (imageId == null) {
+            imageId = workbook.addImage({
+              buffer: prepared.buffer,
+              extension: prepared.extension
+            });
+            mediaCache.set(mediaKey, imageId);
+            report.uniqueMediaImages += 1;
+            report.optimizedTotalImageBytes += prepared.finalByteLength;
+          } else {
+            report.reusedMediaReferences += 1;
+          }
+          const sourceKey = [
+            finalImage.name,
+            finalImage.size,
+            finalImage.lastModified
+          ].join("::");
+          if (!report.sourceAssets.has(sourceKey)) {
+            report.sourceAssets.add(sourceKey);
+            report.originalTotalImageBytes += finalImage.size || 0;
+          }
+          const anchor = rangeToTwoCellAnchor(
+            worksheet,
+            targetRange
+          );
+          worksheet.addImage(imageId, anchor);
+          item.finalMimeType = prepared.mimeType;
+          item.finalByteLength = prepared.finalByteLength;
+          item.imageId = imageId;
+          item.sourceWidth = prepared.sourceWidth;
+          item.sourceHeight = prepared.sourceHeight;
+          item.canvasWidth = prepared.canvasWidth;
+          item.canvasHeight = prepared.canvasHeight;
+          item.editAs = anchor.editAs;
+          item.anchor = anchor;
+          item.mediaReused = mediaCache.get(mediaKey) === imageId &&
+            report.insertedImages.some(entry => entry.imageId === imageId);
+          item.insertionStatus = "inserted";
+          report.preparedImages.push(item);
+          report.insertedImages.push(item);
+          if (prepared.finalByteLength > INSPECTION_SINGLE_MEDIA_WARNING_BYTES) {
+            report.warnings.push(
+              `${slot.templateKey} embedded image exceeds 2.5 MB.`
+            );
+          }
+          console.group("INSERTED TWO-CELL IMAGE");
+          console.log("Workbook key:", slot.templateKey);
+          console.log("Worksheet and range:", `${worksheetName}!${targetRange}`);
+          console.log("Anchor:", anchor);
+          console.log(
+            "Contained canvas:",
+            `${prepared.canvasWidth} x ${prepared.canvasHeight}`
+          );
+          console.log("Embedded bytes:", prepared.finalByteLength);
+          console.groupEnd();
+          prepared.release();
+          return item;
+        } catch (error) {
+          item.insertionStatus = "error";
+          report.skippedImages.push(item);
+          report.errors.push({
+            slotId: slot.id,
+            message: error instanceof Error ? error.message : String(error)
+          });
+          throw error;
+        }
+      };
+
+      insertUnassignedImages = async function inspectionInsertOptimizedUnassigned(
+        workbook,
+        images,
+        assignedIds
+      ) {
+        const unassigned = images.filter(image => !assignedIds.has(image.id));
+        if (!unassigned.length) return;
+        const sheet = workbook.getWorksheet("Unassigned") ||
+          workbook.addWorksheet("Unassigned");
+        sheet.getColumn(1).width = 24;
+        sheet.getColumn(2).width = 24;
+        sheet.getColumn(5).width = 24;
+        sheet.getColumn(6).width = 24;
+        sheet.getCell("A1").value = "Unassigned Images";
+        sheet.getCell("A1").font = { bold: true, size: 16 };
+        sheet.getCell("A2").value =
+          "Uploaded pictures not assigned to an inspection-standard slot.";
+        sheet.getCell("A2").font = { italic: true };
+        sheet.views = [{ state: "frozen", ySplit: 2, showGridLines: false }];
+        for (const [index, image] of unassigned.entries()) {
+          const startColumn = index % 2 === 0 ? 1 : 5;
+          const startRow = 4 + Math.floor(index / 2) * 14;
+          sheet.getCell(startRow, startColumn).value =
+            image.file.name || `Unassigned image ${index + 1}`;
+          sheet.getCell(startRow, startColumn).font = { bold: true };
+          sheet.getCell(startRow, startColumn).alignment = {
+            wrapText: true,
+            vertical: "middle"
+          };
+          for (let row = startRow + 1; row <= startRow + 10; row += 1) {
+            sheet.getRow(row).height = 18;
+          }
+          const pseudoSlot = {
+            templateKey: "unassigned_photo",
+            id: `unassigned-${index + 1}`
+          };
+          const targetRange = `${sheet.getColumn(startColumn).letter}${
+            startRow + 1
+          }:${sheet.getColumn(startColumn + 3).letter}${startRow + 10}`;
+          const prepared = await inspectionPrepareContainedExportImage({
+            file: image.file,
+            slot: pseudoSlot,
+            rangeBounds: inspectionRangePixelBounds(sheet, targetRange)
+          });
+          const mediaKey = await inspectionHashBuffer(prepared.buffer);
+          const mediaCache = window.__inspectionWorkbookMediaCache ||
+            (window.__inspectionWorkbookMediaCache = new Map());
+          let imageId = mediaCache.get(mediaKey);
+          const report = inspectionCurrentExportReport();
+          const sourceKey = [
+            image.file.name,
+            image.file.size,
+            image.file.lastModified
+          ].join("::");
+          if (!report.sourceAssets.has(sourceKey)) {
+            report.sourceAssets.add(sourceKey);
+            report.originalTotalImageBytes += image.file.size || 0;
+          }
+          if (imageId == null) {
+            imageId = workbook.addImage({
+              buffer: prepared.buffer,
+              extension: prepared.extension
+            });
+            mediaCache.set(mediaKey, imageId);
+            report.uniqueMediaImages += 1;
+            report.optimizedTotalImageBytes += prepared.finalByteLength;
+          } else {
+            report.reusedMediaReferences += 1;
+          }
+          sheet.addImage(
+            imageId,
+            rangeToTwoCellAnchor(sheet, targetRange)
+          );
+          prepared.release();
+        }
+      };
+
+      Xk = async function inspectionWriteVerifiedLightweightWorkbook(
+        workbook,
+        fgCode,
+        lackText
+      ) {
+        const report = inspectionCurrentExportReport();
+        const assignedCount = report.assignedSlots.length;
+        const insertedCount = report.insertedImages.length;
+        if (assignedCount > 0 && insertedCount === 0) {
+          throw new Error(
+            "Export stopped: assigned images were not inserted into COVER."
+          );
+        }
+        if (insertedCount !== assignedCount) {
+          throw new Error(
+            `Export stopped: inserted ${insertedCount} of ${assignedCount} ` +
+            "assigned COVER fields."
+          );
+        }
+        for (const item of report.insertedImages) {
+          if (
+            !item.anchor?.tl ||
+            !item.anchor?.br ||
+            item.anchor.editAs !== "oneCell"
+          ) {
+            throw new Error(
+              `Invalid opposite-corner drawing anchor for ${item.workbookKey}.`
+            );
+          }
+        }
+        const generatedBuffer = await workbook.xlsx.writeBuffer();
+        const preservedBuffer = await Wk(generatedBuffer);
+        report.finalXlsxByteSize = preservedBuffer.byteLength;
+        if (report.optimizedTotalImageBytes > INSPECTION_MEDIA_WARNING_BYTES) {
+          report.warnings.push("Embedded media exceeds 20 MB.");
+        }
+        if (report.finalXlsxByteSize > INSPECTION_XLSX_WARNING_BYTES) {
+          report.warnings.push("Generated XLSX exceeds 25 MB.");
+        }
+        const reduction = report.originalTotalImageBytes
+          ? Math.max(
+              0,
+              100 - (
+                report.optimizedTotalImageBytes /
+                report.originalTotalImageBytes *
+                100
+              )
+            )
+          : 0;
+        const formatBytes = value => value < 1024 * 1024
+          ? `${(value / 1024).toFixed(1)} KB`
+          : `${(value / 1024 / 1024).toFixed(1)} MB`;
+        const diagnostics = [
+          `Images assigned: ${assignedCount}`,
+          `Pictures inserted: ${insertedCount}`,
+          `Unique media: ${report.uniqueMediaImages}`,
+          `Media reused: ${report.reusedMediaReferences}`,
+          `Original images: ${formatBytes(report.originalTotalImageBytes)}`,
+          `Embedded images: ${formatBytes(report.optimizedTotalImageBytes)}`,
+          `Reduction: ${reduction.toFixed(0)}%`,
+          `Generated XLSX: ${formatBytes(report.finalXlsxByteSize)}`
+        ].join(" | ");
+        const blob = new Blob([preservedBuffer], {
+          type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = Vk(fgCode, lackText);
+        anchor.style.display = "none";
+        document.body.appendChild(anchor);
+        anchor.click();
+        window.setTimeout(() => {
+          anchor.remove();
+          URL.revokeObjectURL(url);
+        }, 60000);
+        inspectionShowCoverResult(
+          diagnostics + (
+            report.warnings.length
+              ? ` | Warning: ${report.warnings.join(" ")}`
+              : ""
+          ),
+          false
+        );
+        window.__inspectionLastCompletedExportReport = report;
+      };
+
+      window.InspectionWorkbookImages = {
+        calculateContainRect,
+        rangeToTwoCellAnchor,
+        prepareContainedExportImage: inspectionPrepareContainedExportImage,
+        getExportProfile: inspectionGetExportProfile
+      };
+
+      function inspectionDefinitionForAssetKey(assetKey) {
+        return Object.values(SLOT_DEFINITIONS).find(
+          definition => definition.assetKeys?.includes(assetKey)
+        ) || null;
+      }
+
+      function inspectionSlotStatus(slot, assignments) {
+        const assignedCount = slot.assetKeys.filter(
+          assetKey => assignments[assetKey]
+        ).length;
+        if (assignedCount === slot.assetKeys.length) return "filled";
+        if (assignedCount > 0) return "partial";
+        return "missing";
+      }
+
+      function inspectionGcd(left, right) {
+        let a = Math.max(1, Math.round(left));
+        let b = Math.max(1, Math.round(right));
+        while (b) [a, b] = [b, a % b];
+        return a;
+      }
+
+      function inspectionImageMetadata({ image, compact = false }) {
+        const [dimensions, setDimensions] = Et.useState(null);
+        const onLoad = event => {
+          const width = event.currentTarget.naturalWidth;
+          const height = event.currentTarget.naturalHeight;
+          if (width && height) setDimensions({ width, height });
+        };
+        const ratio = dimensions
+          ? (() => {
+              const divisor = inspectionGcd(
+                dimensions.width,
+                dimensions.height
+              );
+              return `${Math.round(dimensions.width / divisor)}:${
+                Math.round(dimensions.height / divisor)
+              }`;
+            })()
+          : "";
+        return {
+          dimensions,
+          ratio,
+          onLoad,
+          label: dimensions
+            ? `${dimensions.width} \u00d7 ${dimensions.height}${
+                compact ? "" : ` \u00b7 ${ratio} \u00b7 Fit: Contain`
+              }`
+            : "Fit: Contain"
+        };
+      }
+
+      function inspectionActionButton({
+        label,
+        title = label,
+        icon,
+        onClick,
+        danger = false
+      }) {
+        return mt.jsx("button", {
+          type: "button",
+          className:
+            `asset-preview__action ${danger ? "asset-preview__action--danger" : ""}`,
+          "aria-label": label,
+          title,
+          onPointerDown: event => event.stopPropagation(),
+          onMouseDown: event => event.stopPropagation(),
+          onClick: event => {
+            event.preventDefault();
+            event.stopPropagation();
+            onClick?.(event);
+          },
+          children: icon
+        });
+      }
+
+      var INSPECTION_ASSET_DRAG_TYPE =
+        "application/x-inspection-asset-id";
+      var INSPECTION_ASSET_SOURCE_TYPE =
+        "application/x-inspection-asset-source";
+      var INSPECTION_CARTON_RECORD_TYPE =
+        "application/x-inspection-master-carton-record";
+
+      f8 = function inspectionDenseAssetTarget({
+        assetKey,
+        assignedImage,
+        isActive,
+        locale,
+        onClear,
+        onCrop,
+        onDragEnter,
+        onDragLeave,
+        onDrop,
+        slot,
+        onReplace
+      }) {
+        const copy = Py[locale];
+        const definition = inspectionFieldDefinition(slot);
+        const linkedFront =
+          slot.id === "colorbox_front_back" &&
+          assetKey === "fg_colorbox_front";
+        const label = linkedFront
+          ? "Front - linked from FG Colorbox Front"
+          : copy.assetLabels[assetKey] ?? Ry(assetKey);
+        const metadata = inspectionImageMetadata({
+          image: assignedImage
+        });
+        const startDrag = (event, imageId) => {
+          window.__inspectionDragImageId = imageId;
+          event.dataTransfer.setData(
+            INSPECTION_ASSET_DRAG_TYPE,
+            imageId
+          );
+          event.dataTransfer.setData(
+            INSPECTION_ASSET_SOURCE_TYPE,
+            "uploaded"
+          );
+          event.dataTransfer.setData(Iy, imageId);
+          event.dataTransfer.setData("text/plain", imageId);
+          event.dataTransfer.effectAllowed = "copyMove";
+        };
+        return mt.jsx("div", {
+          className:
+            `asset-target ${assignedImage ? "asset-target--assigned" : ""} ` +
+            `${isActive ? "asset-target--active" : ""} ` +
+            `${isActive ? "asset-target--drag-over" : ""} ` +
+            `${linkedFront ? "asset-target--linked" : ""}`,
+          "aria-label": label,
+          onDragOver: event => {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+            if (!linkedFront && !isActive) onDragEnter(assetKey);
+          },
+          onDragEnter: event => {
+            event.preventDefault();
+            if (!linkedFront && !isActive) onDragEnter(assetKey);
+          },
+          onDragLeave: event => {
+            if (
+              !(event.relatedTarget instanceof Node) ||
+              !event.currentTarget.contains(event.relatedTarget)
+            ) {
+              onDragLeave();
+            }
+          },
+          onDrop: event => {
+            event.preventDefault();
+            if (!linkedFront) onDrop(event, assetKey);
+          },
+          children: assignedImage
+            ? mt.jsxs("div", {
+                className: "asset-preview asset-target__preview",
+                draggable: !linkedFront,
+                tabIndex: 0,
+                onPointerDown: () => {
+                  if (!linkedFront) {
+                    window.__inspectionDragImageId = assignedImage.id;
+                  }
+                },
+                onDragStart: event => {
+                  if (!linkedFront) startDrag(event, assignedImage.id);
+                },
+                onDragEnd: () => {
+                  window.__inspectionDragImageId = null;
+                },
+                children: [
+                  mt.jsx("div", {
+                    className: "asset-preview__image asset-target__preview-image",
+                    onClick: event => {
+                      event.stopPropagation();
+                      onCrop(assignedImage, slot);
+                    },
+                    children: mt.jsx("img", {
+                      src: assignedImage.previewUrl,
+                      alt: label,
+                      draggable: false,
+                      onLoad: metadata.onLoad
+                    })
+                  }),
+                  mt.jsx("span", {
+                    className: "asset-target__filename",
+                    title: assignedImage.file.name || copy.pastedImage,
+                    children: assignedImage.file.name || copy.pastedImage
+                  }),
+                  mt.jsx("span", {
+                    className: "asset-preview__metadata",
+                    children: metadata.label
+                  }),
+                  linkedFront
+                    ? mt.jsx("span", {
+                        className: "asset-preview__linked-badge",
+                        children: "Linked"
+                      })
+                    : mt.jsxs("div", {
+                        className: "asset-preview__overlay",
+                        children: [
+                          inspectionActionButton({
+                            label: "Crop image",
+                            title: copy.crop,
+                            icon: "\u270e",
+                            onClick: () => onCrop(assignedImage, slot)
+                          }),
+                          inspectionActionButton({
+                            label: "Rotate image left",
+                            title: copy.rotateLeft,
+                            icon: "\u21b6",
+                            onClick: async () => onReplace?.(
+                              assignedImage.id,
+                              await rotateImageFile(assignedImage, -90)
+                            )
+                          }),
+                          inspectionActionButton({
+                            label: "Rotate image right",
+                            title: copy.rotateRight,
+                            icon: "\u21b7",
+                            onClick: async () => onReplace?.(
+                              assignedImage.id,
+                              await rotateImageFile(assignedImage, 90)
+                            )
+                          }),
+                          inspectionActionButton({
+                            label: "Remove image",
+                            title: copy.clear,
+                            icon: "\u2715",
+                            danger: true,
+                            onClick: () => onClear(assetKey)
+                          })
+                        ]
+                      })
+                ]
+              })
+            : mt.jsxs("div", {
+                className: "asset-target__placeholder",
+                tabIndex: 0,
+                children: [
+                  mt.jsx("span", {
+                    className: "asset-target__name",
+                    children: label
+                  }),
+                  mt.jsx("span", {
+                    className: "asset-target__category",
+                    children: definition.category
+                  }),
+                  mt.jsx("span", {
+                    className: "asset-target__hint",
+                    children: linkedFront
+                      ? "Assign FG Colorbox Front"
+                      : copy.dropHere
+                  })
+                ]
+              })
+        });
+      };
+
+      d8 = function inspectionDenseSlotCard({
+        slot,
+        assignments,
+        activeAssetKey,
+        imageMap,
+        locale,
+        onClear,
+        onCrop,
+        onDragEnter,
+        onDragLeave,
+        onDrop,
+        onAutoCrop,
+        onReplace
+      }) {
+        const definition = inspectionFieldDefinition(slot);
+        const status = inspectionSlotStatus(slot, assignments);
+        const rangeTitle =
+          `${definition.worksheet}!${definition.range}`;
+        return mt.jsxs("article", {
+          id: `inspection-slot-${slot.id}`,
+          className:
+            `slot-card slot-card--${status} ` +
+            `${status === "filled" ? "slot-card--assigned" : ""}`,
+          "data-slot-id": slot.id,
+          "data-workbook-key": definition.workbookKey,
+          tabIndex: -1,
+          title: rangeTitle,
+          children: [
+            mt.jsxs("div", {
+              className: "slot-card__meta",
+              children: [
+                mt.jsxs("span", {
+                  className: "slot-card__identity",
+                  children: [
+                    mt.jsx("strong", {
+                      className: "slot-card__label",
+                      children: definition.displayName
+                    }),
+                    mt.jsx("span", {
+                      className: "slot-card__category",
+                      children: definition.category
+                    })
+                  ]
+                }),
+                mt.jsx("span", {
+                  className: `slot-card__status slot-card__status--${status}`,
+                  children: status
+                })
+              ]
+            }),
+            mt.jsx("div", {
+              className:
+                `slot-card__body ${
+                  slot.mergeDirection === "vertical"
+                    ? "slot-card__body--vertical"
+                    : slot.assetKeys.length > 1
+                      ? "slot-card__body--horizontal"
+                      : ""
+                }`,
+              children: slot.assetKeys.map(assetKey => {
+                const imageId = assignments[assetKey];
+                const assignedImage = imageId
+                  ? imageMap.get(imageId)
+                  : undefined;
+                return mt.jsx(f8, {
+                  assetKey,
+                  assignedImage,
+                  isActive: activeAssetKey === assetKey,
+                  locale,
+                  onClear,
+                  onCrop,
+                  onDragEnter,
+                  onDragLeave,
+                  onDrop,
+                  slot,
+                  onAutoCrop,
+                  onReplace
+                }, assetKey);
+              })
+            }),
+            mt.jsxs("div", {
+              className: "slot-card__footer",
+              children: [
+                mt.jsx("code", {
+                  className: "slot-card__workbook-key",
+                  children: definition.workbookKey
+                }),
+                mt.jsx("span", {
+                  className: "slot-card__range",
+                  children: definition.range
+                })
+              ]
+            })
+          ]
+        });
+      };
+
+      function inspectionBomRequirements({
+        sectionKey,
+        slots,
+        assignments,
+        collapsed,
+        onToggle
+      }) {
+        const category = INSPECTION_CATEGORY_CONFIG[sectionKey] ||
+          INSPECTION_CATEGORY_CONFIG.manuals;
+        return mt.jsxs("aside", {
+          className:
+            `inspection-bom-requirements ${
+              collapsed ? "inspection-bom-requirements--collapsed" : ""
+            }`,
+          "data-local-bom-requirements": sectionKey,
+          "aria-label": category.bomLabel,
+          children: [
+            mt.jsxs("div", {
+              className: "inspection-bom-requirements__header",
+              children: [
+                mt.jsxs("span", {
+                  children: [
+                    mt.jsx("strong", { children: category.bomLabel }),
+                    mt.jsx("small", {
+                      children: `${slots.length} mapped slots`
+                    })
+                  ]
+                }),
+                mt.jsx("button", {
+                  type: "button",
+                  className: "inspection-icon-button",
+                  "aria-expanded": !collapsed,
+                  "aria-controls": `inspection-bom-${sectionKey}`,
+                  "aria-label": `${collapsed ? "Expand" : "Collapse"} ${
+                    category.bomLabel
+                  }`,
+                  onClick: onToggle,
+                  children: collapsed ? "+" : "\u2212"
+                })
+              ]
+            }),
+            !collapsed && mt.jsx("div", {
+              id: `inspection-bom-${sectionKey}`,
+              className: "inspection-bom-requirements__list",
+              children: slots.map(slot => {
+                const definition = inspectionFieldDefinition(slot);
+                const status = inspectionSlotStatus(slot, assignments);
+                return mt.jsxs("button", {
+                  type: "button",
+                  className:
+                    `inspection-bom-requirement inspection-bom-requirement--${
+                      status === "filled"
+                        ? "assigned"
+                        : definition.bomMode === "manual"
+                          ? "manual-only"
+                          : status
+                    }`,
+                  "data-workbook-key": definition.workbookKey,
+                  onClick: () => inspectionHighlightWorkbookKey(
+                    definition.workbookKey,
+                    true
+                  ),
+                  children: [
+                    mt.jsxs("span", {
+                      className: "inspection-bom-requirement__copy",
+                      children: [
+                        mt.jsx("strong", {
+                          children: definition.displayName
+                        }),
+                        mt.jsx("small", {
+                          children:
+                            `${definition.category} \u00b7 ${definition.workbookKey}`
+                        })
+                      ]
+                    }),
+                    mt.jsx("span", {
+                      className: "inspection-bom-requirement__status",
+                      children: definition.bomMode === "manual"
+                        ? "manual"
+                        : status
+                    })
+                  ]
+                }, definition.workbookKey);
+              })
+            })
+          ]
+        });
+      }
+
+      function inspectionTableRow({
+        slot,
+        assignments,
+        imageMap,
+        locale,
+        onClear,
+        onCrop,
+        onReplace,
+        onOpenAssets
+      }) {
+        const definition = inspectionFieldDefinition(slot);
+        const assigned = slot.assetKeys
+          .map(assetKey => ({
+            assetKey,
+            image: assignments[assetKey]
+              ? imageMap.get(assignments[assetKey])
+              : null
+          }))
+          .filter(item => item.image);
+        const status = inspectionSlotStatus(slot, assignments);
+        const filename = assigned.map(
+          item => item.image.file.name || "Pasted image"
+        ).join(" + ");
+        const first = assigned[0];
+        return mt.jsxs("tr", {
+          className: `inspection-table__row inspection-table__row--${status}`,
+          "data-workbook-key": definition.workbookKey,
+          onClick: () => inspectionHighlightWorkbookKey(
+            definition.workbookKey
+          ),
+          children: [
+            mt.jsx("td", {
+              "data-label": "Status",
+              children: mt.jsx("span", {
+                className: `slot-card__status slot-card__status--${status}`,
+                children: status
+              })
+            }),
+            mt.jsx("td", {
+              "data-label": "Template Key",
+              children: mt.jsx("code", {
+                children: definition.workbookKey
+              })
+            }),
+            mt.jsx("td", {
+              "data-label": "Description",
+              children: definition.displayName
+            }),
+            mt.jsx("td", {
+              "data-label": "Category",
+              children: definition.category
+            }),
+            mt.jsx("td", {
+              "data-label": "Excel Range",
+              children: mt.jsx("span", {
+                className: "inspection-table__range",
+                children: definition.range
+              })
+            }),
+            mt.jsx("td", {
+              "data-label": "Thumbnail",
+              children: mt.jsx("div", {
+                className: "inspection-table__thumbnails",
+                children: assigned.length
+                  ? assigned.map(({ assetKey, image }) => mt.jsx("button", {
+                      type: "button",
+                      className: "table-thumbnail",
+                      "aria-label": `Edit ${image.file.name}`,
+                      title: image.file.name,
+                      onClick: event => {
+                        event.stopPropagation();
+                        onCrop(image, slot);
+                      },
+                      children: mt.jsx("img", {
+                        src: image.previewUrl,
+                        alt: "",
+                        draggable: false
+                      })
+                    }, assetKey))
+                  : mt.jsx("span", {
+                      className: "inspection-table__empty-thumb",
+                      children: "-"
+                    })
+              })
+            }),
+            mt.jsx("td", {
+              "data-label": "Filename",
+              title: filename,
+              children: filename || "Not assigned"
+            }),
+            mt.jsx("td", {
+              "data-label": "Quick Actions",
+              children: mt.jsxs("div", {
+                className: "inspection-table__actions",
+                children: [
+                  first && mt.jsx("button", {
+                    type: "button",
+                    "aria-label": `Rotate ${definition.displayName} right`,
+                    title: "Rotate right",
+                    onClick: async event => {
+                      event.stopPropagation();
+                      onReplace(
+                        first.image.id,
+                        await rotateImageFile(first.image, 90)
+                      );
+                    },
+                    children: "\u21b7"
+                  }),
+                  assigned.length > 0 && mt.jsx("button", {
+                    type: "button",
+                    "aria-label": `Remove ${definition.displayName} images`,
+                    title: "Remove assigned images",
+                    onClick: event => {
+                      event.stopPropagation();
+                      assigned.forEach(item => onClear(item.assetKey));
+                    },
+                    children: "\u2715"
+                  }),
+                  mt.jsx("button", {
+                    type: "button",
+                    "aria-label": `Assign an asset to ${definition.displayName}`,
+                    title: "Assign from assets",
+                    onClick: event => {
+                      event.stopPropagation();
+                      onOpenAssets(
+                        slot.assetKeys.find(key => !assignments[key]) ||
+                        slot.assetKeys[0]
+                      );
+                    },
+                    children: "+"
+                  })
+                ]
+              })
+            })
+          ]
+        });
+      }
+
+      h8 = function inspectionAccordionSection({
+        title,
+        slots,
+        assignments,
+        activeAssetKey,
+        imageMap,
+        locale,
+        onClear,
+        onCrop,
+        onDragEnter,
+        onDragLeave,
+        onDrop,
+        onAutoCrop,
+        onReplace,
+        viewMode = "grid",
+        collapsed = false,
+        bomCollapsed = false,
+        onToggle,
+        onToggleBom,
+        onOpenAssets
+      }) {
+        const sectionKey = slots[0]?.section || "manuals";
+        const filled = slots.filter(
+          slot => inspectionSlotStatus(slot, assignments) === "filled"
+        ).length;
+        const missing = slots.length - filled;
+        return mt.jsxs("section", {
+          id: `inspection-section-${sectionKey}`,
+          className: "slot-section",
+          "data-inspection-section": sectionKey,
+          children: [
+            mt.jsxs("div", {
+              className: "slot-section__header",
+              children: [
+                mt.jsxs("button", {
+                  type: "button",
+                  className: "slot-section__toggle",
+                  "aria-expanded": !collapsed,
+                  "aria-controls": `inspection-section-body-${sectionKey}`,
+                  onClick: onToggle,
+                  children: [
+                    mt.jsx("strong", {
+                      className: "slot-section__title",
+                      children: title
+                    }),
+                    mt.jsx("span", {
+                      children:
+                        `${filled} / ${slots.length} filled \u00b7 ${missing} missing`
+                    })
+                  ]
+                }),
+                mt.jsx("span", {
+                  className: "slot-section__chevron",
+                  "aria-hidden": "true",
+                  children: collapsed ? "\u25b8" : "\u25be"
+                })
+              ]
+            }),
+            !collapsed && mt.jsxs("div", {
+              id: `inspection-section-body-${sectionKey}`,
+              className: "section-layout",
+              children: [
+                inspectionBomRequirements({
+                  sectionKey,
+                  slots,
+                  assignments,
+                  collapsed: bomCollapsed,
+                  onToggle: onToggleBom
+                }),
+                viewMode === "table"
+                  ? mt.jsx("div", {
+                      className: "inspection-table-wrap",
+                      children: mt.jsxs("table", {
+                        className: "inspection-table",
+                        children: [
+                          mt.jsx("thead", {
+                            children: mt.jsxs("tr", {
+                              children: [
+                                "Status", "Template Key", "Description",
+                                "Category", "Excel Range", "Assigned Thumbnail",
+                                "Filename", "Quick Actions"
+                              ].map(label => mt.jsx("th", {
+                                scope: "col",
+                                children: label
+                              }, label))
+                            })
+                          }),
+                          mt.jsx("tbody", {
+                            children: slots.map(slot =>
+                              mt.jsx(inspectionTableRow, {
+                                slot,
+                                assignments,
+                                imageMap,
+                                locale,
+                                onClear,
+                                onCrop,
+                                onReplace,
+                                onOpenAssets
+                              }, slot.id)
+                            )
+                          })
+                        ]
+                      })
+                    })
+                  : mt.jsx("div", {
+                      className: "slot-grid",
+                      children: slots.map(slot => mt.jsx(d8, {
+                        slot,
+                        assignments,
+                        activeAssetKey,
+                        imageMap,
+                        locale,
+                        onClear,
+                        onCrop,
+                        onDragEnter,
+                        onDragLeave,
+                        onDrop,
+                        onAutoCrop,
+                        onReplace
+                      }, slot.id))
+                    })
+              ]
+            }),
+            sectionKey === "components" && mt.jsx("div", {
+              id: "master-carton-library-inline-host",
+              className: "master-carton-library-inline-host",
+              "aria-live": "polite"
+            })
+          ]
+        });
+      };
+
+      y8 = function inspectionDraggableAssetThumb({
+        image,
+        onDuplicate,
+        onAssign,
+        targetOptions
+      }) {
+        const [dragging, setDragging] = Et.useState(false);
+        const name = image.file.name || "Pasted image";
+        const metadata = inspectionImageMetadata({ image, compact: true });
+        return mt.jsxs("div", {
+          className:
+            `image-thumb ${dragging ? "image-thumb--dragging" : ""}`,
+          draggable: true,
+          onPointerDown: () => {
+            window.__inspectionDragImageId = image.id;
+          },
+          onDragStart: event => {
+            setDragging(true);
+            window.__inspectionDragImageId = image.id;
+            event.dataTransfer.setData(
+              INSPECTION_ASSET_DRAG_TYPE,
+              image.id
+            );
+            event.dataTransfer.setData(
+              INSPECTION_ASSET_SOURCE_TYPE,
+              "uploaded"
+            );
+            event.dataTransfer.setData(Iy, image.id);
+            event.dataTransfer.setData("text/plain", image.id);
+            event.dataTransfer.effectAllowed = "copyMove";
+          },
+          onDragEnd: () => {
+            setDragging(false);
+            window.__inspectionDragImageId = null;
+          },
+          title: name,
+          children: [
+            mt.jsx("div", {
+              className: "image-thumb__preview",
+              children: mt.jsx("img", {
+                src: image.previewUrl,
+                alt: name,
+                draggable: false,
+                onLoad: metadata.onLoad
+              })
+            }),
+            mt.jsx("span", {
+              className: "image-thumb__name",
+              title: name,
+              children: name
+            }),
+            mt.jsx("span", {
+              className: "image-thumb__meta",
+              children: metadata.label
+            }),
+            mt.jsxs("div", {
+              className: "image-thumb__quick",
+              children: [
+                mt.jsx("select", {
+                  value: "",
+                  "aria-label": `Assign ${name} without dragging`,
+                  onChange: event => {
+                    if (event.currentTarget.value) {
+                      onAssign(event.currentTarget.value, image.id);
+                    }
+                  },
+                  children: [
+                    mt.jsx("option", {
+                      value: "",
+                      children: "Assign to..."
+                    }),
+                    ...targetOptions.map(option => mt.jsx("option", {
+                      value: option.value,
+                      children: option.label
+                    }, option.value))
+                  ]
+                }),
+                mt.jsx("button", {
+                  type: "button",
+                  "aria-label": `Duplicate ${name}`,
+                  title: "Duplicate",
+                  onClick: event => {
+                    event.stopPropagation();
+                    onDuplicate(image.id);
+                  },
+                  children: "\u29c9"
+                })
+              ]
+            })
+          ]
+        });
+      };
+
+      function inspectionClearAssignmentsDialog({
+        count,
+        onCancel,
+        onConfirm,
+        triggerRef
+      }) {
+        const panelRef = Et.useRef(null);
+        Et.useEffect(() => {
+          const panel = panelRef.current;
+          const focusable = panel?.querySelectorAll(
+            "button:not([disabled])"
+          );
+          focusable?.[0]?.focus();
+          const onKeyDown = event => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              onCancel();
+              return;
+            }
+            if (event.key !== "Tab" || !focusable?.length) return;
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+              event.preventDefault();
+              last.focus();
+            } else if (
+              !event.shiftKey &&
+              document.activeElement === last
+            ) {
+              event.preventDefault();
+              first.focus();
+            }
+          };
+          document.addEventListener("keydown", onKeyDown);
+          return () => {
+            document.removeEventListener("keydown", onKeyDown);
+            window.setTimeout(() => triggerRef.current?.focus(), 0);
+          };
+        }, []);
+        return mt.jsx("div", {
+          className: "inspection-dialog-backdrop",
+          role: "presentation",
+          onMouseDown: event => {
+            if (event.target === event.currentTarget) onCancel();
+          },
+          children: mt.jsxs("div", {
+            ref: panelRef,
+            className: "inspection-dialog",
+            role: "dialog",
+            "aria-modal": "true",
+            "aria-labelledby": "clear-assignments-title",
+            "aria-describedby": "clear-assignments-description",
+            children: [
+              mt.jsx("h3", {
+                id: "clear-assignments-title",
+                children: "Clear all assignments?"
+              }),
+              mt.jsx("p", {
+                id: "clear-assignments-description",
+                children:
+                  `${count} assignments will be cleared. Uploaded assets ` +
+                  "will remain in the asset pool. Crop and rotation changes " +
+                  "remain attached to those assets."
+              }),
+              mt.jsxs("div", {
+                className: "inspection-dialog__actions",
+                children: [
+                  mt.jsx("button", {
+                    type: "button",
+                    onClick: onCancel,
+                    children: "Cancel"
+                  }),
+                  mt.jsx("button", {
+                    type: "button",
+                    className: "inspection-danger-button",
+                    onClick: onConfirm,
+                    children: "Clear Assignments"
+                  })
+                ]
+              })
+            ]
+          })
+        });
+      }
+
+      b8 = function inspectionEnhancedCropDialog({
+        image,
+        slot,
+        copy,
+        onCancel,
+        onApply,
+        onReplace
+      }) {
+        const [crop, setCrop] = Et.useState({
+          x: 0, y: 0, width: 100, height: 100
+        });
+        const [busy, setBusy] = Et.useState(false);
+        const [preset, setPreset] = Et.useState("free");
+        const [targetRatio, setTargetRatio] = Et.useState(null);
+        const [dimensions, setDimensions] = Et.useState(null);
+        const [zoom, setZoomState] = Et.useState(1);
+        const imageBoxRef = Et.useRef(null);
+        const dragRef = Et.useRef(null);
+        const applyRef = Et.useRef(null);
+
+        Et.useEffect(() => {
+          setCrop({ x: 0, y: 0, width: 100, height: 100 });
+          setPreset("free");
+          setZoomState(1);
+          let cancelled = false;
+          if (slot) {
+            getSlotSmartCropTarget(slot).then(size => {
+              if (!cancelled && size.height) {
+                setTargetRatio(size.width / size.height);
+              }
+            });
+          }
+          return () => { cancelled = true; };
+        }, [image.id, slot?.id]);
+
+        const applyAspect = ratio => {
+          if (!dimensions || !ratio) return;
+          const sourceRatio = dimensions.width / dimensions.height;
+          let width = 100;
+          let height = 100;
+          if (sourceRatio > ratio) width = ratio / sourceRatio * 100;
+          else height = sourceRatio / ratio * 100;
+          setCrop({
+            x: (100 - width) / 2,
+            y: (100 - height) / 2,
+            width,
+            height
+          });
+          setZoomState(1);
+        };
+
+        const choosePreset = value => {
+          setPreset(value);
+          const ratios = {
+            target: targetRatio,
+            square: 1,
+            "4:3": 4 / 3,
+            "3:4": 3 / 4,
+            "16:9": 16 / 9,
+            "9:16": 9 / 16
+          };
+          if (value === "free") {
+            setCrop({ x: 0, y: 0, width: 100, height: 100 });
+          } else {
+            applyAspect(ratios[value]);
+          }
+        };
+
+        const setZoom = value => {
+          const next = Math.max(1, Math.min(4, Number(value)));
+          setZoomState(next);
+          setCrop(current => {
+            const centerX = current.x + current.width / 2;
+            const centerY = current.y + current.height / 2;
+            const width = Math.min(100, 100 / next);
+            const height = Math.min(100, 100 / next);
+            return {
+              x: Math.max(0, Math.min(100 - width, centerX - width / 2)),
+              y: Math.max(0, Math.min(100 - height, centerY - height / 2)),
+              width,
+              height
+            };
+          });
+        };
+
+        Et.useEffect(() => {
+          const move = event => {
+            const drag = dragRef.current;
+            const box = imageBoxRef.current;
+            if (!drag || !box) return;
+            const rect = box.getBoundingClientRect();
+            const deltaX = (event.clientX - drag.pointerX) / rect.width * 100;
+            const deltaY = (event.clientY - drag.pointerY) / rect.height * 100;
+            if (drag.mode === "move") {
+              setCrop({
+                ...drag.crop,
+                x: Math.max(
+                  0,
+                  Math.min(
+                    100 - drag.crop.width,
+                    drag.crop.x + deltaX
+                  )
+                ),
+                y: Math.max(
+                  0,
+                  Math.min(
+                    100 - drag.crop.height,
+                    drag.crop.y + deltaY
+                  )
+                )
+              });
+              return;
+            }
+            const minimum = 1;
+            let left = drag.crop.x;
+            let top = drag.crop.y;
+            let right = drag.crop.x + drag.crop.width;
+            let bottom = drag.crop.y + drag.crop.height;
+            if (drag.mode.includes("w")) {
+              left = Math.max(0, Math.min(right - minimum, left + deltaX));
+            }
+            if (drag.mode.includes("e")) {
+              right = Math.min(100, Math.max(left + minimum, right + deltaX));
+            }
+            if (drag.mode.includes("n")) {
+              top = Math.max(0, Math.min(bottom - minimum, top + deltaY));
+            }
+            if (drag.mode.includes("s")) {
+              bottom = Math.min(100, Math.max(top + minimum, bottom + deltaY));
+            }
+            setCrop({
+              x: left,
+              y: top,
+              width: right - left,
+              height: bottom - top
+            });
+          };
+          const end = () => { dragRef.current = null; };
+          window.addEventListener("pointermove", move);
+          window.addEventListener("pointerup", end);
+          return () => {
+            window.removeEventListener("pointermove", move);
+            window.removeEventListener("pointerup", end);
+          };
+        }, []);
+
+        const begin = (event, mode) => {
+          event.preventDefault();
+          event.stopPropagation();
+          dragRef.current = {
+            mode,
+            pointerX: event.clientX,
+            pointerY: event.clientY,
+            crop
+          };
+        };
+
+        const apply = async () => {
+          if (busy) return;
+          setBusy(true);
+          try {
+            const file = await g8(image, crop);
+            Object.defineProperty(file, "__inspectionManualCrop", {
+              value: true,
+              configurable: true
+            });
+            onApply(file);
+          } finally {
+            setBusy(false);
+          }
+        };
+
+        const rotate = async degrees => {
+          if (busy) return;
+          setBusy(true);
+          try {
+            const file = await rotateImageFile(image, degrees);
+            Object.defineProperty(file, "__inspectionManualCrop", {
+              value: true,
+              configurable: true
+            });
+            onReplace?.(image.id, file);
+            setCrop({ x: 0, y: 0, width: 100, height: 100 });
+            setPreset("free");
+            setZoomState(1);
+          } finally {
+            setBusy(false);
+          }
+        };
+
+        Et.useEffect(() => {
+          const onKeyDown = event => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              onCancel();
+            } else if (event.key === "Enter") {
+              event.preventDefault();
+              applyRef.current?.click();
+            } else if (event.key.toLowerCase() === "r") {
+              event.preventDefault();
+              rotate(event.shiftKey ? -90 : 90);
+            } else if (event.key === "+" || event.key === "=") {
+              event.preventDefault();
+              setZoom(Math.min(4, zoom + 0.25));
+            } else if (event.key === "-") {
+              event.preventDefault();
+              setZoom(Math.max(1, zoom - 0.25));
+            }
+          };
+          document.addEventListener("keydown", onKeyDown);
+          return () => document.removeEventListener("keydown", onKeyDown);
+        }, [zoom, image.id, crop, busy]);
+
+        const outputDimensions = dimensions
+          ? `${Math.max(1, Math.round(dimensions.width * crop.width / 100))} x ${
+              Math.max(1, Math.round(dimensions.height * crop.height / 100))
+            }`
+          : "-";
+        return mt.jsx("div", {
+          className: "crop-modal",
+          role: "dialog",
+          "aria-modal": "true",
+          "aria-labelledby": "inspection-crop-title",
+          children: mt.jsxs("div", {
+            className: "crop-modal__panel",
+            children: [
+              mt.jsxs("div", {
+                className: "crop-modal__header",
+                children: [
+                  mt.jsxs("div", {
+                    children: [
+                      mt.jsx("h3", {
+                        id: "inspection-crop-title",
+                        children: copy.cropTitle
+                      }),
+                      mt.jsx("p", {
+                        children:
+                          "Enter Apply \u00b7 Esc Cancel \u00b7 R rotate \u00b7 +/- zoom"
+                      })
+                    ]
+                  }),
+                  mt.jsx("button", {
+                    type: "button",
+                    "aria-label": "Close crop dialog",
+                    onClick: onCancel,
+                    children: copy.cancel
+                  })
+                ]
+              }),
+              mt.jsx("div", {
+                className: "crop-modal__stage",
+                children: mt.jsxs("div", {
+                  className: "crop-modal__imagebox",
+                  ref: imageBoxRef,
+                  children: [
+                    mt.jsx("img", {
+                      src: image.previewUrl,
+                      alt: image.file.name,
+                      onLoad: event => setDimensions({
+                        width: event.currentTarget.naturalWidth,
+                        height: event.currentTarget.naturalHeight
+                      })
+                    }),
+                    mt.jsx("div", {
+                      className: "crop-modal__box",
+                      onPointerDown: event => begin(event, "move"),
+                      style: {
+                        left: `${crop.x}%`,
+                        top: `${crop.y}%`,
+                        width: `${crop.width}%`,
+                        height: `${crop.height}%`
+                      },
+                      children: [
+                        "n", "s", "e", "w", "nw", "ne", "sw", "se"
+                      ].map(handle => mt.jsx("span", {
+                        className:
+                          `crop-modal__handle crop-modal__handle--${handle}`,
+                        onPointerDown: event => begin(event, handle)
+                      }, handle))
+                    })
+                  ]
+                })
+              }),
+              mt.jsx("div", {
+                className: "crop-modal__presets",
+                role: "group",
+                "aria-label": "Crop aspect ratio",
+                children: [
+                  ["free", "Free"],
+                  ["target", "Target Cell Ratio"],
+                  ["square", "1:1"],
+                  ["4:3", "4:3"],
+                  ["3:4", "3:4"],
+                  ["16:9", "16:9"],
+                  ["9:16", "9:16"]
+                ].map(([value, label]) => mt.jsx("button", {
+                  type: "button",
+                  className: preset === value ? "is-active" : "",
+                  "aria-pressed": preset === value,
+                  disabled: value === "target" && !targetRatio,
+                  onClick: () => choosePreset(value),
+                  children: label
+                }, value))
+              }),
+              mt.jsxs("div", {
+                className: "crop-modal__toolbar",
+                children: [
+                  mt.jsxs("label", {
+                    className: "crop-modal__zoom",
+                    children: [
+                      mt.jsx("span", {
+                        children: `Zoom ${zoom.toFixed(2)}x`
+                      }),
+                      mt.jsx("input", {
+                        type: "range",
+                        min: 1,
+                        max: 4,
+                        step: 0.05,
+                        value: zoom,
+                        onChange: event => setZoom(event.currentTarget.value)
+                      })
+                    ]
+                  }),
+                  mt.jsx("button", {
+                    type: "button",
+                    onClick: () => rotate(-90),
+                    children: "Rotate Left"
+                  }),
+                  mt.jsx("button", {
+                    type: "button",
+                    onClick: () => rotate(90),
+                    children: "Rotate Right"
+                  }),
+                  mt.jsx("button", {
+                    type: "button",
+                    onClick: () => choosePreset("free"),
+                    children: "Fit Image"
+                  }),
+                  mt.jsx("button", {
+                    type: "button",
+                    onClick: () => {
+                      setCrop({ x: 0, y: 0, width: 100, height: 100 });
+                      setPreset("free");
+                      setZoomState(1);
+                    },
+                    children: "Reset Crop"
+                  })
+                ]
+              }),
+              mt.jsxs("div", {
+                className: "crop-modal__facts",
+                children: [
+                  mt.jsx("span", {
+                    children: `Target ratio: ${
+                      targetRatio ? targetRatio.toFixed(3) : "loading"
+                    }`
+                  }),
+                  mt.jsx("span", {
+                    children: `Original: ${
+                      dimensions
+                        ? `${dimensions.width} x ${dimensions.height}`
+                        : "-"
+                    }`
+                  }),
+                  mt.jsx("span", {
+                    children: `Output: ${outputDimensions}`
+                  })
+                ]
+              }),
+              mt.jsx("button", {
+                ref: applyRef,
+                type: "button",
+                className: "crop-modal__apply",
+                disabled: busy,
+                onClick: apply,
+                children: busy ? "Working..." : copy.cropApply
+              })
+            ]
+          })
+        });
+      };
+
+      u8 = function inspectionDenseWorkspace({
+        locale,
+        templateSlots,
+        images,
+        assignments,
+        onAssign,
+        onClear,
+        onCropImage,
+        onAutoCropImage,
+        onDuplicateImage,
+        onFilesAdded,
+        onFilesAddedToAsset
+      }) {
+        const [activeAssetKey, setActiveAssetKey] = Et.useState(null);
+        const [cropImageId, setCropImageId] = Et.useState(null);
+        const [cropSlotId, setCropSlotId] = Et.useState(null);
+        const [viewMode, setViewMode] = Et.useState("grid");
+        const [collapsedSections, setCollapsedSections] = Et.useState({});
+        const [collapsedBom, setCollapsedBom] = Et.useState({});
+        const [clearDialogOpen, setClearDialogOpen] = Et.useState(false);
+        const [, setBomVersion] = Et.useState(0);
+        const clearTriggerRef = Et.useRef(null);
+        const copy = Py[locale];
+        const imageMap = Et.useMemo(
+          () => new Map(images.map(image => [image.id, image])),
+          [images]
+        );
+        const assignedImageIds = Et.useMemo(
+          () => new Set(Object.values(assignments).filter(Boolean)),
+          [assignments]
+        );
+        const allAssetKeys = Et.useMemo(
+          () => [...new Set(templateSlots.flatMap(slot => slot.assetKeys))],
+          [templateSlots]
+        );
+        const targetOptions = Et.useMemo(
+          () => allAssetKeys.map(assetKey => {
+            const definition = inspectionDefinitionForAssetKey(assetKey);
+            const internalIndex = definition?.assetKeys?.indexOf(assetKey) ?? -1;
+            const inputLabel = definition?.internalInputs?.[internalIndex];
+            return {
+              value: assetKey,
+              label: `${
+                definition?.displayName || Ry(assetKey)
+              }${inputLabel ? ` - ${inputLabel}` : ""}`
+            };
+          }),
+          [allAssetKeys]
+        );
+
+        Et.useEffect(() => {
+          const update = () => setBomVersion(version => version + 1);
+          window.addEventListener("inspection-bom-updated", update);
+          return () => window.removeEventListener(
+            "inspection-bom-updated",
+            update
+          );
+        }, []);
+
+        const requiredKeys = new Set(
+          Object.values(SLOT_DEFINITIONS)
+            .filter(definition =>
+              definition.requiredByDefault !== false ||
+              window.__inspectionBomRequiredKeys?.includes(
+                definition.workbookKey
+              )
+            )
+            .map(definition => definition.workbookKey)
+        );
+        const requiredSlots = templateSlots.filter(slot =>
+          requiredKeys.has(slot.templateKey)
+        );
+        const filledRequired = requiredSlots.filter(
+          slot => inspectionSlotStatus(slot, assignments) === "filled"
+        ).length;
+        const assignedCount = allAssetKeys.filter(
+          assetKey => assignments[assetKey]
+        ).length;
+        window.__inspectionCurrentAssignments = { ...assignments };
+
+        const filteredAssets = Et.useMemo(
+          () => images.filter(image => !assignedImageIds.has(image.id)),
+          [images, assignedImageIds]
+        );
+        const filteredSlots = templateSlots;
+
+        const cropImage = cropImageId
+          ? imageMap.get(cropImageId)
+          : null;
+        const cropSlot = cropSlotId
+          ? templateSlots.find(slot => slot.id === cropSlotId)
+          : null;
+
+        const openCrop = (image, slot) => {
+          setCropImageId(image.id);
+          setCropSlotId(slot.id);
+        };
+        const closeCrop = () => {
+          setCropImageId(null);
+          setCropSlotId(null);
+        };
+        const dropOnTarget = async (event, assetKey) => {
+          event.preventDefault();
+          setActiveAssetKey(null);
+          const source = event.dataTransfer.getData(
+            INSPECTION_ASSET_SOURCE_TYPE
+          );
+          if (source === "master-carton-library") {
+            const cartonTargets = new Set([
+              "mastercarton_front", "mastercarton_back",
+              "mastercarton_left", "mastercarton_right",
+              "mastercarton_top", "mastercarton_bottom",
+              "colorboxes_packed_mastercarton"
+            ]);
+            if (!cartonTargets.has(assetKey)) return;
+            let record = window.__inspectionMasterCartonDragRecord;
+            try {
+              const serialized = event.dataTransfer.getData(
+                INSPECTION_CARTON_RECORD_TYPE
+              );
+              if (serialized) record = JSON.parse(serialized);
+            } catch {}
+            window.__inspectionMasterCartonDragRecord = null;
+            if (!record?.relativePath) return;
+            const response = await fetch(
+              encodeURI(record.relativePath),
+              { cache: "no-store" }
+            );
+            if (!response.ok) return;
+            const blob = await response.blob();
+            const file = new File([blob], record.filename, {
+              type: blob.type ||
+                `image/${
+                  record.extension === "jpg"
+                    ? "jpeg"
+                    : record.extension || "png"
+                }`,
+              lastModified: Date.parse(record.modifiedUtc) || Date.now()
+            });
+            await onFilesAddedToAsset(assetKey, [file]);
+            window.dispatchEvent(new CustomEvent(
+              "inspection-master-carton-assigned",
+              { detail: { record, assetKey } }
+            ));
+            return;
+          }
+          const imageId =
+            event.dataTransfer.getData(INSPECTION_ASSET_DRAG_TYPE) ||
+            event.dataTransfer.getData(Iy) ||
+            event.dataTransfer.getData("text/plain") ||
+            window.__inspectionDragImageId;
+          window.__inspectionDragImageId = null;
+          if (imageId) {
+            onAssign(assetKey, imageId);
+            return;
+          }
+          const files = Array.from(event.dataTransfer.files);
+          if (files.length) onFilesAddedToAsset(assetKey, files);
+        };
+        const dropOnPool = event => {
+          event.preventDefault();
+          const files = Array.from(event.dataTransfer.files);
+          if (files.length) onFilesAdded(files);
+        };
+
+        const clearAssignments = () => {
+          allAssetKeys.forEach(assetKey => {
+            if (assignments[assetKey]) onClear(assetKey);
+          });
+          setClearDialogOpen(false);
+        };
+
+        const openAssetsForKey = () => {
+          window.setTimeout(() => {
+            document.querySelector(
+              "#inspection-asset-pool select"
+            )?.focus();
+          }, 0);
+        };
+
+        return mt.jsxs("section", {
+          className: `workspace workspace--${viewMode}`,
+          "aria-label": "Image assignment workspace",
+          children: [
+            mt.jsxs("div", {
+              className: "workspace__header",
+              children: [
+                mt.jsxs("div", {
+                  className: "workspace__heading",
+                  children: [
+                    mt.jsx("h2", {
+                      className: "workspace__title",
+                      children: "Inspection Images"
+                    }),
+                    mt.jsx("span", {
+                      className: "workspace__summary",
+                      children:
+                        `${filledRequired} / ${requiredSlots.length} required ` +
+                        "slots filled"
+                    })
+                  ]
+                }),
+                mt.jsxs("div", {
+                  className: "workspace__toolbar",
+                  children: [
+                    mt.jsxs("div", {
+                      className: "inspection-segmented",
+                      role: "group",
+                      "aria-label": "Workspace view",
+                      children: [
+                        ["grid", "Grid View"],
+                        ["table", "Compact Table View"]
+                      ].map(([value, label]) => mt.jsx("button", {
+                        type: "button",
+                        "aria-label": label,
+                        "aria-pressed": viewMode === value,
+                        className: viewMode === value ? "is-active" : "",
+                        onClick: () => setViewMode(value),
+                        children: value === "grid" ? "Grid" : "Table"
+                      }, value))
+                    }),
+                    mt.jsx("button", {
+                      type: "button",
+                      onClick: () =>
+                        document.querySelector(".dropzone__btn")?.click(),
+                      children: "Upload Images"
+                    }),
+                    mt.jsx("button", {
+                      ref: clearTriggerRef,
+                      type: "button",
+                      className: "inspection-danger-text",
+                      disabled: assignedCount === 0,
+                      onClick: () => setClearDialogOpen(true),
+                      children: "Clear Assignments"
+                    })
+                  ]
+                })
+              ]
+            }),
+            mt.jsxs("div", {
+              className: "workspace__layout",
+              children: [
+                mt.jsx("div", {
+                  className: "workspace__slots",
+                  children: Object.keys(INSPECTION_CATEGORY_CONFIG).map(
+                    sectionKey => {
+                      const sectionSlots = filteredSlots.filter(
+                        slot => slot.section === sectionKey
+                      );
+                      if (!sectionSlots.length) return null;
+                      return mt.jsx(h8, {
+                        title: INSPECTION_CATEGORY_CONFIG[sectionKey].label,
+                        slots: sectionSlots,
+                        assignments,
+                        activeAssetKey,
+                        imageMap,
+                        locale,
+                        onClear,
+                        onCrop: openCrop,
+                        onDragEnter: setActiveAssetKey,
+                        onDragLeave: () => setActiveAssetKey(null),
+                        onDrop: dropOnTarget,
+                        onReplace: onCropImage,
+                        viewMode,
+                        collapsed: !!collapsedSections[sectionKey],
+                        bomCollapsed: !!collapsedBom[sectionKey],
+                        onToggle: () => setCollapsedSections(current => ({
+                          ...current,
+                          [sectionKey]: !current[sectionKey]
+                        })),
+                        onToggleBom: () => setCollapsedBom(current => ({
+                          ...current,
+                          [sectionKey]: !current[sectionKey]
+                        })),
+                        onOpenAssets: openAssetsForKey
+                      }, sectionKey);
+                    }
+                  )
+                }),
+                mt.jsxs("aside", {
+                  id: "inspection-asset-pool",
+                  className: "asset-pool",
+                  "aria-label": "Unassigned image asset pool",
+                  onDragOver: event => {
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "copy";
+                  },
+                  onDrop: dropOnPool,
+                  children: [
+                    mt.jsxs("div", {
+                      className: "asset-pool__header",
+                      children: [
+                        mt.jsxs("div", {
+                          children: [
+                            mt.jsx("h3", {
+                              className: "asset-pool__title",
+                              children: "Unassigned Images"
+                            }),
+                            mt.jsx("span", {
+                              className: "asset-pool__count",
+                              children:
+                                `${filteredAssets.length} image${
+                                  filteredAssets.length === 1 ? "" : "s"
+                                }`
+                            })
+                          ]
+                        }),
+                        mt.jsx("button", {
+                          type: "button",
+                          className: "asset-pool__upload",
+                          onClick: () =>
+                            document.querySelector(
+                              ".dropzone__btn"
+                            )?.click(),
+                          children: "Upload Images"
+                        })
+                      ]
+                    }),
+                    mt.jsx("p", {
+                      className: "asset-pool__helper",
+                      children: "Drag an image into a placeholder."
+                    }),
+                    filteredAssets.length
+                      ? mt.jsx("div", {
+                          className: "asset-pool__grid",
+                          children: filteredAssets.map(image => mt.jsx(y8, {
+                            image,
+                            onDuplicate: onDuplicateImage,
+                            onAssign,
+                            targetOptions
+                          }, image.id))
+                        })
+                      : mt.jsx("div", {
+                          className: "asset-pool__empty",
+                          children:
+                            "No unassigned images. Upload images or remove " +
+                            "an assignment to return it here."
+                        })
+                  ]
+                })
+              ]
+            }),
+            cropImage && cropSlot && mt.jsx(b8, {
+              image: cropImage,
+              slot: cropSlot,
+              copy,
+              onCancel: closeCrop,
+              onReplace: onCropImage,
+              onApply: file => {
+                onCropImage(cropImage.id, file);
+                closeCrop();
+              }
+            }),
+            clearDialogOpen && mt.jsx(inspectionClearAssignmentsDialog, {
+              count: assignedCount,
+              onCancel: () => setClearDialogOpen(false),
+              onConfirm: clearAssignments,
+              triggerRef: clearTriggerRef
+            })
+          ]
+        });
+      };
+
+      var inspectionMasterRefactorStyle = document.createElement("style");
+      inspectionMasterRefactorStyle.id = "inspection-master-refactor-style";
+      inspectionMasterRefactorStyle.textContent = `
+        .export-controls__clear { display: none !important; }
+        .asset-target__preview img,
+        .image-thumb img { object-fit: contain !important; }
+        .workspace__layout {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) 300px !important;
+          gap: 12px;
+          align-items: start;
+          overflow: visible;
+        }
+        .slot-card { min-height: 0 !important; }
+        .asset-pool {
+          position: sticky !important;
+          top: 12px;
+          display: flex;
+          max-height: calc(100vh - 24px);
+          min-height: 230px;
+          flex-direction: column;
+          align-self: start;
+          overflow: hidden;
+          border: 1px solid var(--border);
+          border-radius: 9px;
+          background: var(--surface);
+        }
+        .asset-pool__grid {
+          display: grid;
+          grid-template-columns: 1fr;
+          gap: 8px;
+          min-height: 0;
+          max-height: none;
+          flex: 1 1 auto;
+          overflow-y: auto;
+          padding: 8px;
+        }
+        .asset-pool__header {
+          display: flex;
+          flex: 0 0 auto;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          padding: 9px 10px;
+        }
+        .asset-pool__header > div {
+          display: grid;
+          min-width: 0;
+          gap: 2px;
+        }
+        .asset-pool__upload {
+          min-height: 32px;
+          border: 1px solid var(--primary);
+          border-radius: 6px;
+          background: var(--primary);
+          color: #fff;
+          cursor: pointer;
+          font-size: 10px;
+          font-weight: 800;
+          padding: 6px 8px;
+          white-space: nowrap;
+        }
+        .asset-pool__helper {
+          margin: 0;
+          border-bottom: 1px solid var(--border);
+          background: var(--surface-muted);
+          color: var(--text-muted);
+          font-size: 10px;
+          padding: 7px 10px;
+        }
+        .app {
+          width: min(100%, 1540px);
+          max-width: none;
+          padding: 18px clamp(10px, 2vw, 24px) 40px;
+        }
+        .app__header { margin-bottom: 14px; }
+        .app__toolbar { margin-bottom: 10px; }
+        .app__title { font-size: 21px; }
+        .app__subtitle { font-size: 12px; }
+        .workspace {
+          position: relative;
+          margin-bottom: 18px;
+          overflow: visible;
+          transform: none;
+          contain: none;
+        }
+        .workspace__header {
+          display: grid;
+          grid-template-columns: minmax(190px, auto) minmax(0, 1fr);
+          align-items: center;
+          gap: 8px 14px;
+          margin-bottom: 7px;
+          padding: 8px 10px;
+          border: 1px solid var(--border);
+          border-radius: 9px;
+          background: var(--surface);
+        }
+        .workspace__heading {
+          display: flex;
+          min-width: 0;
+          align-items: baseline;
+          gap: 8px;
+        }
+        .workspace__title { font-size: 16px; white-space: nowrap; }
+        .workspace__summary {
+          margin: 0;
+          font-size: 11px;
+          white-space: nowrap;
+        }
+        .workspace__toolbar {
+          display: flex;
+          min-width: 0;
+          align-items: center;
+          justify-content: flex-end;
+          gap: 5px;
+          flex-wrap: wrap;
+        }
+        .workspace__toolbar > button,
+        .workspace__toolbar .inspection-segmented button,
+        .inspection-progress button,
+        .asset-drawer button,
+        .asset-drawer select,
+        .asset-drawer input,
+        .crop-modal__presets button,
+        .crop-modal__toolbar button,
+        .inspection-table__actions button,
+        .inspection-dialog button {
+          min-height: 30px;
+          border: 1px solid var(--border);
+          border-radius: 6px;
+          background: var(--surface);
+          color: var(--text-body);
+          cursor: pointer;
+          font: inherit;
+          font-size: 11px;
+          font-weight: 700;
+          padding: 5px 8px;
+        }
+        .workspace__toolbar button:hover,
+        .inspection-progress button:hover,
+        .asset-drawer button:hover,
+        .crop-modal__presets button:hover,
+        .crop-modal__toolbar button:hover,
+        .inspection-table__actions button:hover {
+          border-color: var(--primary);
+          color: var(--primary);
+        }
+        .workspace__toolbar button:focus-visible,
+        .workspace__toolbar input:focus-visible,
+        .inspection-progress button:focus-visible,
+        .slot-section__toggle:focus-visible,
+        .asset-preview:focus-visible,
+        .asset-preview__action:focus-visible,
+        .table-thumbnail:focus-visible,
+        .asset-pool button:focus-visible,
+        .asset-pool select:focus-visible,
+        .asset-drawer button:focus-visible,
+        .asset-drawer input:focus-visible,
+        .asset-drawer select:focus-visible,
+        .crop-modal button:focus-visible,
+        .crop-modal input:focus-visible,
+        .inspection-dialog button:focus-visible {
+          outline: 3px solid var(--primary-soft);
+          outline-offset: 2px;
+          border-color: var(--primary);
+        }
+        .inspection-segmented {
+          display: inline-flex;
+          padding: 2px;
+          border: 1px solid var(--border);
+          border-radius: 7px;
+          background: var(--surface-muted);
+        }
+        .inspection-segmented button { min-height: 26px; border: 0; }
+        .inspection-segmented button.is-active,
+        .crop-modal__presets button.is-active {
+          border-color: var(--primary);
+          background: var(--primary);
+          color: #fff;
+        }
+        .workspace__search {
+          width: 128px;
+          min-height: 30px;
+          border: 1px solid var(--border);
+          border-radius: 6px;
+          background: var(--surface);
+          color: var(--text);
+          font-size: 11px;
+          padding: 5px 8px;
+        }
+        .inspection-check {
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          color: var(--text-muted);
+          font-size: 10px;
+          font-weight: 700;
+          white-space: nowrap;
+        }
+        .inspection-check input { margin: 0; }
+        .inspection-danger-text { color: var(--danger) !important; }
+        .inspection-progress {
+          position: sticky;
+          top: 0;
+          z-index: 18;
+          display: grid;
+          grid-template-columns: minmax(210px, auto) minmax(130px, 1fr) auto;
+          align-items: center;
+          gap: 6px 10px;
+          margin-bottom: 8px;
+          padding: 7px 10px;
+          border: 1px solid var(--border);
+          border-radius: 8px;
+          background: color-mix(in srgb, var(--surface) 94%, transparent);
+          box-shadow: 0 5px 16px var(--shadow);
+          backdrop-filter: blur(9px);
+        }
+        .inspection-progress__summary {
+          display: flex;
+          align-items: center;
+          gap: 7px;
+          font-size: 11px;
+          white-space: nowrap;
+        }
+        .inspection-progress__badge {
+          border-radius: 999px;
+          background: #fff7ed;
+          color: #9a3412;
+          font-size: 9px;
+          font-weight: 800;
+          padding: 3px 6px;
+          text-transform: uppercase;
+        }
+        .inspection-progress__badge.is-complete {
+          background: #dcfce7;
+          color: #166534;
+        }
+        .inspection-progress progress {
+          width: 100%;
+          height: 8px;
+          accent-color: var(--success);
+        }
+        .inspection-progress__jumps {
+          display: flex;
+          justify-content: flex-end;
+          gap: 4px;
+          flex-wrap: wrap;
+        }
+        .inspection-progress__jumps button { min-height: 25px; padding: 3px 6px; }
+        .inspection-progress__live {
+          grid-column: 1 / -1;
+          color: var(--primary);
+          font-size: 10px;
+          font-weight: 700;
+        }
+        .workspace__slots { gap: 9px; }
+        .slot-section {
+          min-width: 0;
+          border: 1px solid var(--border);
+          border-radius: 9px;
+          background: var(--surface);
+        }
+        .slot-section__header {
+          position: sticky;
+          top: 8px;
+          z-index: 12;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          min-height: 38px;
+          border-bottom: 1px solid var(--border);
+          border-radius: 9px 9px 0 0;
+          background: var(--surface);
+          padding: 4px 8px;
+        }
+        .slot-section__toggle {
+          display: flex;
+          min-width: 0;
+          flex: 1;
+          align-items: baseline;
+          gap: 8px;
+          border: 0;
+          background: transparent;
+          color: var(--text);
+          cursor: pointer;
+          padding: 4px;
+          text-align: left;
+        }
+        .slot-section__title { margin: 0; font-size: 13px; }
+        .slot-section__toggle span {
+          color: var(--text-muted);
+          font-size: 10px;
+        }
+        .slot-section__chevron {
+          color: var(--text-muted);
+          font-size: 14px;
+        }
+        .section-layout {
+          display: grid;
+          grid-template-columns: minmax(190px, 230px) minmax(0, 1fr);
+          gap: 10px;
+          padding: 8px;
+        }
+        .slot-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+          gap: 8px;
+          min-width: 0;
+        }
+        .slot-card {
+          min-height: 0;
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+          border-radius: 7px;
+          box-shadow: none;
+        }
+        .slot-card__meta {
+          min-height: 36px;
+          align-items: center;
+          padding: 6px 8px;
+        }
+        .slot-card__identity { gap: 1px; }
+        .slot-card__label { font-size: 11px; line-height: 1.2; }
+        .slot-card__category {
+          display: inline-flex;
+          width: fit-content;
+          border-radius: 999px;
+          background: var(--surface-soft);
+          color: var(--text-muted);
+          font-size: 8px;
+          font-weight: 800;
+          padding: 2px 5px;
+          text-transform: uppercase;
+        }
+        .slot-card__status {
+          display: inline-flex;
+          align-items: center;
+          width: fit-content;
+          border-radius: 999px;
+          background: var(--danger-soft);
+          color: var(--danger);
+          font-size: 8px;
+          font-weight: 800;
+          padding: 3px 6px;
+          text-transform: uppercase;
+          white-space: nowrap;
+        }
+        .slot-card__status--filled {
+          background: #dcfce7;
+          color: #166534;
+        }
+        .slot-card__status--partial {
+          background: #fef3c7;
+          color: #92400e;
+        }
+        .slot-card__body {
+          min-height: 0;
+          flex: none;
+          background: var(--surface-muted);
+        }
+        .slot-card__body--horizontal {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .slot-card__body--vertical {
+          grid-template-rows: repeat(2, minmax(0, 1fr));
+        }
+        .asset-target { min-height: 0; padding: 5px; }
+        .asset-target--drag-over {
+          border-radius: 7px;
+          background: var(--primary-soft);
+          box-shadow: inset 0 0 0 2px var(--primary);
+          transform: scale(1.01);
+        }
+        .asset-target__placeholder {
+          min-height: 96px;
+          padding: 8px;
+          border-width: 1px;
+          border-radius: 6px;
+        }
+        .asset-target__name { font-size: 10px; }
+        .asset-target__category {
+          margin-top: 3px;
+          color: var(--text-muted);
+          font-size: 8px;
+          font-weight: 700;
+        }
+        .asset-target__hint { margin-top: 3px; font-size: 9px; }
+        .asset-preview,
+        .asset-target__preview {
+          position: relative;
+          display: flex;
+          width: 100%;
+          min-width: 0;
+          min-height: 0;
+          flex-direction: column;
+          gap: 3px;
+          overflow: hidden;
+          border-radius: 6px;
+          background: var(--surface-muted);
+          color: var(--text-body);
+          cursor: grab;
+          padding: 4px;
+        }
+        .asset-preview__image,
+        .asset-target__preview-image,
+        .image-thumb__preview,
+        .table-thumbnail {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          overflow: hidden;
+          background: #ffffff;
+        }
+        .asset-preview__image,
+        .asset-target__preview-image {
+          height: 100px;
+          min-height: 100px;
+          border: 1px solid var(--border);
+          border-radius: 5px;
+        }
+        .slot-card__body--horizontal .asset-preview__image,
+        .slot-card__body--horizontal .asset-target__preview-image,
+        .slot-card__body--vertical .asset-preview__image,
+        .slot-card__body--vertical .asset-target__preview-image {
+          height: 90px;
+          min-height: 90px;
+        }
+        .asset-target__preview img,
+        .image-thumb img,
+        .linked-image-preview img,
+        .master-carton-thumbnail img,
+        .table-thumbnail img,
+        .carton-library__picture img {
+          display: block;
+          width: 100%;
+          height: 100%;
+          max-width: 100%;
+          max-height: 100%;
+          object-fit: contain;
+          object-position: center;
+        }
+        .asset-target__filename {
+          max-width: 100%;
+          overflow: hidden;
+          color: var(--text-body);
+          font-size: 9px;
+          padding: 0;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .asset-preview__metadata {
+          position: absolute;
+          right: 5px;
+          bottom: 27px;
+          z-index: 3;
+          max-width: calc(100% - 10px);
+          border-radius: 4px;
+          background: rgba(15, 23, 42, .78);
+          color: #fff;
+          font-size: 8px;
+          opacity: 0;
+          padding: 3px 5px;
+          pointer-events: none;
+          transition: opacity .14s;
+        }
+        .asset-preview:hover .asset-preview__metadata,
+        .asset-preview:focus-within .asset-preview__metadata { opacity: 1; }
+        .asset-preview__overlay {
+          position: absolute;
+          right: 5px;
+          bottom: 5px;
+          left: 5px;
+          z-index: 4;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 3px;
+          flex-wrap: wrap;
+          border-radius: 5px;
+          background: rgba(15, 23, 42, .76);
+          opacity: 0;
+          padding: 3px;
+          pointer-events: none;
+          transform: translateY(3px);
+          transition: opacity .14s, transform .14s;
+        }
+        .asset-preview:hover .asset-preview__overlay,
+        .asset-preview:focus-within .asset-preview__overlay {
+          opacity: 1;
+          pointer-events: auto;
+          transform: translateY(0);
+        }
+        .asset-preview__action {
+          position: static !important;
+          display: inline-flex;
+          width: 32px;
+          height: 32px;
+          align-items: center;
+          justify-content: center;
+          border: 1px solid rgba(255,255,255,.34);
+          border-radius: 5px;
+          background: rgba(15,23,42,.55);
+          color: #fff;
+          cursor: pointer;
+          font-size: 13px;
+          line-height: 1;
+          padding: 0;
+        }
+        .asset-preview__action:hover { background: var(--primary); }
+        .asset-preview__action--danger:hover { background: #b91c1c; }
+        .asset-preview__linked-badge {
+          position: absolute;
+          top: 7px;
+          left: 7px;
+          border-radius: 999px;
+          background: #dbeafe;
+          color: #1d4ed8;
+          font-size: 8px;
+          font-weight: 800;
+          padding: 3px 5px;
+          text-transform: uppercase;
+        }
+        .slot-card__footer {
+          min-height: 29px;
+          gap: 4px;
+          padding: 4px 7px;
+          font-size: 8px;
+        }
+        .slot-card__workbook-key {
+          overflow: hidden;
+          color: var(--text);
+          font-size: 9px;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .slot-card__range { margin-left: auto; color: var(--text-faint); }
+        .slot-card__autocrop {
+          min-height: 23px;
+          padding: 3px 5px;
+          font-size: 8px;
+        }
+        .inspection-bom-requirements {
+          position: sticky;
+          top: 52px;
+          align-self: start;
+          max-height: calc(100vh - 110px);
+        }
+        .inspection-bom-requirements__header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 6px;
+          padding: 7px 8px;
+        }
+        .inspection-bom-requirements__header > span {
+          display: grid;
+          gap: 1px;
+        }
+        .inspection-bom-requirements__header small {
+          color: var(--text-muted);
+          font-size: 8px;
+          font-weight: 400;
+        }
+        .inspection-icon-button {
+          display: inline-flex;
+          width: 27px;
+          height: 27px;
+          flex: 0 0 auto;
+          align-items: center;
+          justify-content: center;
+          border: 1px solid var(--border);
+          border-radius: 6px;
+          background: var(--surface);
+          color: var(--text);
+          cursor: pointer;
+          padding: 0;
+        }
+        .inspection-bom-requirements__list {
+          max-height: calc(100vh - 160px);
+          padding: 5px;
+        }
+        .inspection-bom-requirement { padding: 5px 6px; }
+        .inspection-bom-requirement__copy strong { font-size: 9px; }
+        .inspection-bom-requirement__copy small { font-size: 8px; }
+        .inspection-bom-requirement__status { font-size: 7px; }
+        .inspection-table-wrap {
+          min-width: 0;
+          overflow-x: auto;
+          border: 1px solid var(--border);
+          border-radius: 7px;
+        }
+        .inspection-table {
+          width: 100%;
+          min-width: 920px;
+          border-collapse: collapse;
+          font-size: 10px;
+        }
+        .inspection-table th,
+        .inspection-table td {
+          height: 56px;
+          border-bottom: 1px solid var(--border);
+          padding: 4px 6px;
+          text-align: left;
+          vertical-align: middle;
+        }
+        .inspection-table th {
+          height: 32px;
+          background: var(--surface-muted);
+          color: var(--text-muted);
+          font-size: 8px;
+          letter-spacing: .04em;
+          text-transform: uppercase;
+        }
+        .inspection-table__row { cursor: pointer; }
+        .inspection-table__row:hover { background: var(--primary-soft); }
+        .inspection-table td code { font-size: 9px; }
+        .inspection-table__range {
+          color: var(--text-muted);
+          font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+          font-size: 9px;
+        }
+        .inspection-table__thumbnails {
+          display: flex;
+          gap: 3px;
+        }
+        .table-thumbnail {
+          width: 48px;
+          height: 48px;
+          border: 1px solid var(--border);
+          border-radius: 5px;
+          cursor: pointer;
+          padding: 0;
+        }
+        .inspection-table__empty-thumb {
+          display: inline-flex;
+          width: 48px;
+          height: 48px;
+          align-items: center;
+          justify-content: center;
+          border: 1px dashed var(--border);
+          border-radius: 5px;
+          color: var(--text-faint);
+        }
+        .inspection-table__actions {
+          display: flex;
+          gap: 3px;
+        }
+        .inspection-table__actions button {
+          width: 27px;
+          height: 27px;
+          padding: 0;
+        }
+        .asset-drawer {
+          position: fixed;
+          top: 0;
+          right: 0;
+          z-index: 51;
+          display: flex;
+          width: min(360px, 92vw);
+          height: 100dvh;
+          flex-direction: column;
+          border: 0;
+          border-left: 1px solid var(--border);
+          border-radius: 0;
+          box-shadow: -18px 0 42px rgba(15,23,42,.2);
+          opacity: 0;
+          pointer-events: none;
+          transform: translateX(102%);
+          transition: transform .2s ease, opacity .2s ease;
+        }
+        .asset-drawer--open {
+          opacity: 1;
+          pointer-events: auto;
+          transform: translateX(0);
+        }
+        .asset-drawer .asset-pool__header {
+          flex: 0 0 auto;
+          padding: 10px 12px;
+        }
+        .asset-drawer .asset-pool__header > div {
+          display: grid;
+          gap: 3px;
+        }
+        .asset-drawer__filters,
+        .asset-drawer__batch {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          gap: 5px;
+          flex: 0 0 auto;
+          padding: 8px 10px;
+          border-bottom: 1px solid var(--border);
+        }
+        .asset-drawer__filters input { grid-column: 1 / -1; }
+        .asset-drawer__filters input,
+        .asset-drawer__filters select,
+        .asset-drawer__batch select {
+          min-width: 0;
+          min-height: 30px;
+          border: 1px solid var(--border);
+          border-radius: 6px;
+          background: var(--surface);
+          color: var(--text);
+          font-size: 10px;
+          padding: 5px 7px;
+        }
+        .asset-drawer__batch { grid-template-columns: 1fr 1fr; }
+        .asset-drawer__batch select,
+        .asset-drawer__batch .inspection-check { grid-column: 1 / -1; }
+        .asset-drawer .asset-pool__grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 7px;
+          max-height: none;
+          flex: 1;
+          overflow-y: auto;
+          padding: 9px;
+        }
+        .asset-drawer__scrim {
+          position: fixed;
+          inset: 0;
+          z-index: 50;
+          border: 0;
+          background: rgba(15,23,42,.28);
+          cursor: pointer;
+        }
+        .image-thumb {
+          min-width: 0;
+          overflow: hidden;
+          border-radius: 7px;
+          cursor: grab;
+          padding: 5px;
+        }
+        .image-thumb--dragging {
+          opacity: .55;
+          outline: 2px solid var(--primary);
+          outline-offset: -2px;
+        }
+        .image-thumb--selected {
+          border-color: var(--primary);
+          box-shadow: 0 0 0 2px var(--primary-soft);
+        }
+        .image-thumb__select {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          margin-bottom: 4px;
+          color: var(--text-muted);
+          font-size: 8px;
+          font-weight: 700;
+        }
+        .image-thumb__select input { margin: 0; }
+        .image-thumb__preview {
+          height: 130px;
+          border: 1px solid var(--border);
+          border-radius: 5px;
+          cursor: pointer;
+        }
+        .image-thumb__name {
+          padding: 5px 2px 1px;
+          color: var(--text-body);
+          font-size: 9px;
+        }
+        .image-thumb__meta {
+          display: block;
+          min-height: 14px;
+          color: var(--text-faint);
+          font-size: 8px;
+        }
+        .image-thumb__quick {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) 28px;
+          gap: 4px;
+          margin-top: 3px;
+        }
+        .image-thumb__quick select {
+          min-width: 0;
+          height: 28px;
+          border: 1px solid var(--border);
+          border-radius: 5px;
+          background: var(--surface);
+          color: var(--text);
+          font-size: 8px;
+        }
+        .image-thumb__quick button { width: 28px; min-height: 28px; padding: 0; }
+        .crop-modal { z-index: 70; padding: 12px; }
+        .crop-modal__panel {
+          width: min(900px, 100%);
+          max-height: calc(100dvh - 24px);
+          padding: 10px;
+        }
+        .crop-modal__header { margin-bottom: 7px; }
+        .crop-modal__header h3 { font-size: 14px; }
+        .crop-modal__header p {
+          margin: 2px 0 0;
+          color: var(--text-muted);
+          font-size: 9px;
+        }
+        .crop-modal__stage { max-height: 48vh; }
+        .crop-modal__imagebox,
+        .crop-modal__imagebox img { max-height: 48vh; }
+        .crop-modal__presets,
+        .crop-modal__toolbar,
+        .crop-modal__facts {
+          display: flex;
+          align-items: center;
+          gap: 5px;
+          flex-wrap: wrap;
+          margin-top: 7px;
+        }
+        .crop-modal__presets button,
+        .crop-modal__toolbar button { min-height: 28px; font-size: 9px; }
+        .crop-modal__zoom {
+          display: grid;
+          min-width: 180px;
+          gap: 2px;
+          color: var(--text-muted);
+          font-size: 9px;
+        }
+        .crop-modal__zoom input { width: 100%; }
+        .crop-modal__facts {
+          justify-content: space-between;
+          color: var(--text-muted);
+          font-size: 9px;
+        }
+        .crop-modal__apply { margin-top: 8px; padding: 8px; }
+        .inspection-dialog-backdrop {
+          position: fixed;
+          inset: 0;
+          z-index: 80;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 16px;
+          background: rgba(15,23,42,.62);
+        }
+        .inspection-dialog {
+          width: min(430px, 100%);
+          border: 1px solid var(--border);
+          border-radius: 10px;
+          background: var(--surface);
+          box-shadow: 0 22px 60px rgba(0,0,0,.28);
+          padding: 16px;
+        }
+        .inspection-dialog h3 {
+          margin: 0 0 8px;
+          color: var(--text);
+          font-size: 16px;
+        }
+        .inspection-dialog p {
+          margin: 0;
+          color: var(--text-muted);
+          font-size: 12px;
+          line-height: 1.5;
+        }
+        .inspection-dialog__actions {
+          display: flex;
+          justify-content: flex-end;
+          gap: 7px;
+          margin-top: 14px;
+        }
+        .inspection-danger-button {
+          border-color: var(--danger-border) !important;
+          background: var(--danger-soft) !important;
+          color: var(--danger) !important;
+        }
+        .inspection-export-quality {
+          display: inline-grid;
+          min-width: 190px;
+          gap: 3px;
+          margin: 0 8px 10px 0;
+          text-align: left;
+          vertical-align: middle;
+        }
+        .inspection-export-quality span {
+          color: var(--text-muted);
+          font-size: 9px;
+          font-weight: 800;
+          text-transform: uppercase;
+        }
+        .inspection-export-quality select {
+          min-height: 34px;
+          border: 1px solid var(--border);
+          border-radius: 7px;
+          background: var(--surface);
+          color: var(--text);
+          font-size: 11px;
+          padding: 6px 8px;
+        }
+        #cover-export-result {
+          width: min(100%, 1000px);
+          font-size: 10px !important;
+          line-height: 1.45;
+          text-align: left;
+        }
+        @media (max-width: 1200px) {
+          .workspace__layout {
+            grid-template-columns: minmax(0, 1fr) 250px !important;
+          }
+        }
+        @media (max-width: 1080px) {
+          .workspace__header { grid-template-columns: 1fr; }
+          .workspace__toolbar { justify-content: flex-start; }
+          .section-layout { grid-template-columns: 1fr; }
+          .inspection-bom-requirements {
+            position: static;
+            max-height: none;
+          }
+          .inspection-bom-requirements__list { max-height: 220px; }
+          .slot-grid {
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+          }
+        }
+        @media (max-width: 780px) {
+          .workspace__layout {
+            grid-template-columns: 1fr !important;
+          }
+          .asset-pool {
+            position: static !important;
+            max-height: none;
+            min-height: 0;
+          }
+          .asset-pool__grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            overflow: visible;
+          }
+        }
+        @media (max-width: 720px) {
+          .app { padding: 10px 8px 30px; }
+          .app__header { margin-bottom: 8px; }
+          .workspace__heading { flex-wrap: wrap; }
+          .workspace__summary { white-space: normal; }
+          .workspace__toolbar { align-items: stretch; }
+          .workspace__toolbar > button,
+          .workspace__toolbar > label,
+          .workspace__search { flex: 1 1 130px; }
+          .inspection-progress {
+            top: 0;
+            grid-template-columns: 1fr;
+          }
+          .inspection-progress__summary { flex-wrap: wrap; white-space: normal; }
+          .inspection-progress__jumps { justify-content: flex-start; }
+          .slot-section__header { top: 104px; }
+          .section-layout { padding: 6px; }
+          .slot-grid {
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 6px;
+          }
+          .slot-card__body--horizontal { grid-template-columns: 1fr; }
+          .asset-drawer {
+            top: auto;
+            bottom: 0;
+            width: 100%;
+            height: min(82dvh, 720px);
+            border-top: 1px solid var(--border);
+            border-left: 0;
+            transform: translateY(102%);
+          }
+          .asset-drawer--open { transform: translateY(0); }
+          .inspection-table-wrap { overflow: visible; border: 0; }
+          .inspection-table {
+            display: block;
+            min-width: 0;
+          }
+          .inspection-table thead { display: none; }
+          .inspection-table tbody {
+            display: grid;
+            gap: 6px;
+          }
+          .inspection-table__row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0;
+            border: 1px solid var(--border);
+            border-radius: 7px;
+            background: var(--surface);
+            padding: 4px;
+          }
+          .inspection-table td {
+            display: grid;
+            height: auto;
+            min-width: 0;
+            gap: 2px;
+            border: 0;
+            padding: 4px;
+          }
+          .inspection-table td::before {
+            content: attr(data-label);
+            color: var(--text-faint);
+            font-size: 7px;
+            font-weight: 800;
+            letter-spacing: .04em;
+            text-transform: uppercase;
+          }
+          .inspection-table td:nth-child(3),
+          .inspection-table td:nth-child(7),
+          .inspection-table td:nth-child(8) { grid-column: 1 / -1; }
+          .crop-modal__stage,
+          .crop-modal__imagebox,
+          .crop-modal__imagebox img { max-height: 38vh; }
+        }
+        @media (max-width: 390px) {
+          .slot-grid { grid-template-columns: 1fr; }
+          .asset-pool__grid { grid-template-columns: 1fr; }
+        }
+      `;
+      document.head.appendChild(inspectionMasterRefactorStyle);
+
     </script>
 
     <script id="sheetjs-inline">
@@ -2128,12 +5529,14 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
             const prepared = await loadPreparedBom();
             if (prepared && prepared.rows.length) {
               normalizedRows = prepared.rows;
+              window.__inspectionBomRows = normalizedRows;
               bomLoaded = true;
               bomLoadSource = "Launcher-prepared cache";
               document.documentElement.classList.add("local-bom-loaded");
               buildFinishedGoodIndex(prepared.rows);
               await feedBomToOriginalApp(createNormalizedBomFile(prepared.rows, prepared.source?.name || fallbackBomFile));
               refreshSlotHints();
+              window.dispatchEvent(new CustomEvent("inspection-bom-updated"));
               scheduleMasterCartonRender();
               const cacheLabel = prepared.cacheStatus === "rebuilt" ? "Rebuilt" : prepared.cacheStatus === "stale" ? "Stale fallback" : "Reused";
               const modLocal = prepared.source?.modifiedUtc ? new Date(prepared.source.modifiedUtc).toLocaleString() : "";
@@ -2144,12 +5547,14 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
             // Fall back to Excel-based BOM loading from manifest
             const result = await loadLatestBomRows();
             normalizedRows = result.rows;
+            window.__inspectionBomRows = normalizedRows;
             bomLoaded = true;
             bomLoadSource = "Excel manifest";
             document.documentElement.classList.add("local-bom-loaded");
             const loadedFile = result.loadedFiles[0];
             await feedBomToOriginalApp(createNormalizedBomFile(result.rows, loadedFile?.name || fallbackBomFile));
             refreshSlotHints();
+            window.dispatchEvent(new CustomEvent("inspection-bom-updated"));
             scheduleMasterCartonRender();
             setStatus(`BOM loaded: ${loadedFile ? `${loadedFile.name} (${loadedFile.rows} rows)` : fallbackBomFile}`, "done");
           } catch (error) {
@@ -2261,6 +5666,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
             const rows = rowsForCurrentFg();
             if (!rows.length) return;
             const renderedCheckKeys = new Set();
+            const requiredWorkbookKeys = new Set();
             for (const panel of document.querySelectorAll("[data-local-bom-requirements]")) {
               const section = panel.closest(".slot-section");
               const list = panel.querySelector(".inspection-bom-requirements__list");
@@ -2286,6 +5692,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
                   }
                 }
                 if (cardMatches.length) {
+                  requiredWorkbookKeys.add(workbookKey);
                   for (const match of cardMatches) {
                     const checked = checkedHintKeys.has(match.checkKey)
                       ? " checked"
@@ -2325,6 +5732,8 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
               }
               list.innerHTML = entries.join("");
             }
+            window.__inspectionBomRequiredKeys = [...requiredWorkbookKeys];
+            window.dispatchEvent(new CustomEvent("inspection-bom-updated"));
           } finally {
             hintRendering = false;
           }
@@ -2408,9 +5817,9 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
         }
 
         function findWorkbookCard(workbookKey) {
-          return [...document.querySelectorAll(".slot-card")].find(
-            (card) => card.querySelector(".slot-card__footer span")?.textContent?.trim() === workbookKey,
-          ) || null;
+          return document.querySelector(
+            `.slot-card[data-workbook-key="${CSS.escape(workbookKey)}"]`,
+          );
         }
 
         const directionTargets = {
@@ -2430,7 +5839,9 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
           const target = card?.querySelectorAll(".asset-target")?.[targetInfo[1]];
           const assignedName = target?.querySelector(".asset-target__filename")?.textContent?.trim();
           if (assignedName === record.filename) {
-            target.querySelector(".asset-target__clear")?.click();
+            target.querySelector(
+              '.asset-preview__action[aria-label="Remove image"]',
+            )?.click();
           }
         }
 
@@ -2478,14 +5889,18 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
         }
 
         function ensureMasterCartonLibraryPanel() {
+          const host = document.getElementById(
+            "master-carton-library-inline-host",
+          );
+          if (!host) return null;
           let panel = document.getElementById(cartonLibraryId);
-          if (panel) return panel;
-          const exportControls = document.querySelector(".export-controls");
-          if (!exportControls) return null;
-          panel = document.createElement("section");
-          panel.id = cartonLibraryId;
-          panel.className = "carton-library";
-          exportControls.insertAdjacentElement("afterend", panel);
+          if (!panel) {
+            panel = document.createElement("section");
+            panel.id = cartonLibraryId;
+            panel.className =
+              "carton-library master-carton-picture-library";
+          }
+          if (panel.parentElement !== host) host.appendChild(panel);
           return panel;
         }
 
@@ -2506,8 +5921,11 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
           const index = await loadMasterCartonPictureIndex();
           panel.innerHTML = `
             <div class="carton-library__header">
-              <h2>Master Carton Picture Library</h2>
-              <p>${escapeHtml(index.message || "")}</p>
+              <div>
+                <h2>Master Carton Picture Library</h2>
+                <p>${escapeHtml(index.message || "")}</p>
+                <p class="carton-library__drag-help">Drag a historical carton picture into a carton placeholder.</p>
+              </div>
             </div>
             <div class="carton-library__sections"></div>`;
           const sections = panel.querySelector(".carton-library__sections");
@@ -2516,7 +5934,6 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
             return;
           }
 
-          const recommendationOrder = ["Front", "Back", "Left", "Right", "Top", "Bottom", "Packed FG"];
           for (const carton of cartons) {
             const pictures = picturesForCarton(index, carton.cartonId);
             const section = document.createElement("article");
@@ -2537,13 +5954,17 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
             if (!pictures.length) {
               pictureGrid.innerHTML = `<div class="carton-library__empty carton-library__empty--missing">NO PICTURE FOUND</div>`;
             } else {
-              pictures.forEach((record, indexInCarton) => {
-                const recommendation = recommendationOrder[indexInCarton % recommendationOrder.length];
+              pictures.forEach((record) => {
                 const selected = masterCartonAssignments.get(record.filename) || "Unassigned";
                 const picture = document.createElement("div");
                 picture.className = "carton-library__picture";
+                picture.draggable = true;
+                picture.tabIndex = 0;
+                picture.title = `Drag ${record.filename} into a master-carton placeholder`;
                 picture.innerHTML = `
-                  <img src="${escapeHtml(encodeURI(record.relativePath))}" alt="${escapeHtml(record.filename)}">
+                  <div class="master-carton-library__preview">
+                    <img src="${escapeHtml(encodeURI(record.relativePath))}" alt="${escapeHtml(record.filename)}" draggable="false">
+                  </div>
                   <div class="carton-library__filename">${escapeHtml(record.filename)}</div>
                   <div class="carton-library__meta">
                     Sequence ${escapeHtml(record.sequence)} · Variant ${escapeHtml(record.variant == null ? "none" : record.variant)}
@@ -2556,8 +5977,43 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
                       ).join("")}
                     </select>
                   </label>
-                  <div class="carton-library__recommendation">Recommended based on filename order — direction not verified: ${recommendation}</div>
                   <div class="carton-library__selection">Selected assignment: ${escapeHtml(selected)}</div>`;
+                picture.addEventListener("dragstart", (event) => {
+                  const libraryId =
+                    record.sha256 || record.relativePath || record.filename;
+                  window.__inspectionMasterCartonDragRecord = record;
+                  picture.classList.add("carton-library__picture--dragging");
+                  event.dataTransfer.setData(
+                    "application/x-inspection-asset-source",
+                    "master-carton-library",
+                  );
+                  event.dataTransfer.setData(
+                    "application/x-inspection-master-carton-record",
+                    JSON.stringify(record),
+                  );
+                  event.dataTransfer.setData(
+                    "application/x-inspection-library-image-id",
+                    libraryId,
+                  );
+                  event.dataTransfer.setData(
+                    "application/x-inspection-carton-id",
+                    carton.cartonId,
+                  );
+                  event.dataTransfer.setData(
+                    "application/x-inspection-filename",
+                    record.filename,
+                  );
+                  event.dataTransfer.setData(
+                    "application/x-inspection-relative-path",
+                    record.relativePath,
+                  );
+                  event.dataTransfer.setData("text/plain", libraryId);
+                  event.dataTransfer.effectAllowed = "copyMove";
+                });
+                picture.addEventListener("dragend", () => {
+                  picture.classList.remove("carton-library__picture--dragging");
+                  window.__inspectionMasterCartonDragRecord = null;
+                });
                 const selection = picture.querySelector(".carton-library__selection");
                 picture.querySelector("select").addEventListener("change", async (event) => {
                   event.currentTarget.disabled = true;
@@ -2582,6 +6038,26 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
           window.__masterCartonRenderTimer = window.setTimeout(renderMasterCartonLibrary, delay);
         }
 
+        window.addEventListener(
+          "inspection-master-carton-assigned",
+          (event) => {
+            const record = event.detail?.record;
+            const directionByAssetKey = {
+              mastercarton_front: "Front",
+              mastercarton_back: "Back",
+              mastercarton_left: "Left",
+              mastercarton_right: "Right",
+              mastercarton_top: "Top",
+              mastercarton_bottom: "Bottom",
+              colorboxes_packed_mastercarton: "Packed FG",
+            };
+            const direction = directionByAssetKey[event.detail?.assetKey];
+            if (!record?.filename || !direction) return;
+            masterCartonAssignments.set(record.filename, direction);
+            scheduleMasterCartonRender(40);
+          },
+        );
+
         async function cachedPictureAsPngBuffer(record) {
           const response = await fetch(encodeURI(record.relativePath), { cache: "no-store" });
           if (!response.ok) throw new Error(`Could not load ${record.filename}.`);
@@ -2595,22 +6071,46 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
               image.onerror = () => reject(new Error(`Could not decode ${record.filename}.`));
               image.src = objectUrl;
             });
-            const scale = Math.min(1, 1400 / Math.max(image.naturalWidth, image.naturalHeight));
             const canvas = document.createElement("canvas");
-            canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
-            canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+            canvas.width = 900;
+            canvas.height = 614;
             const context = canvas.getContext("2d");
             if (!context) throw new Error("Canvas rendering is not available.");
             context.fillStyle = "#ffffff";
             context.fillRect(0, 0, canvas.width, canvas.height);
-            context.drawImage(image, 0, 0, canvas.width, canvas.height);
-            const pngBlob = await new Promise((resolve, reject) => {
+            const contain = window.InspectionWorkbookImages.calculateContainRect({
+              sourceWidth: image.naturalWidth,
+              sourceHeight: image.naturalHeight,
+              targetWidth: canvas.width,
+              targetHeight: canvas.height,
+              allowUpscale: true,
+              marginRatio: 0.02,
+            });
+            context.imageSmoothingEnabled = true;
+            context.imageSmoothingQuality = "high";
+            context.drawImage(
+              image,
+              contain.x,
+              contain.y,
+              contain.width,
+              contain.height,
+            );
+            const imageBlob = await new Promise((resolve, reject) => {
               canvas.toBlob(
-                (result) => result ? resolve(result) : reject(new Error("PNG conversion failed.")),
-                "image/png",
+                (result) => result ? resolve(result) : reject(new Error("JPEG conversion failed.")),
+                "image/jpeg",
+                0.82,
               );
             });
-            return pngBlob.arrayBuffer();
+            const buffer = await imageBlob.arrayBuffer();
+            canvas.width = 1;
+            canvas.height = 1;
+            return {
+              buffer,
+              extension: "jpeg",
+              originalByteLength: blob.size,
+              finalByteLength: buffer.byteLength,
+            };
           } finally {
             URL.revokeObjectURL(objectUrl);
           }
@@ -2653,6 +6153,9 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
 
           const index = await loadMasterCartonPictureIndex();
           const cartons = detectedMasterCartons(fgCode);
+          const referenceMediaCache =
+            window.__inspectionWorkbookMediaCache ||
+            (window.__inspectionWorkbookMediaCache = new Map());
           let row = 7;
           if (!cartons.length) {
             sheet.mergeCells(`A${row}:L${row + 1}`);
@@ -2703,12 +6206,44 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
                 const picture = batch[imageIndex];
                 const startColumn = 1 + imageIndex * 4;
                 try {
-                  const imageBuffer = await cachedPictureAsPngBuffer(picture);
-                  const imageId = workbook.addImage({ buffer: imageBuffer, extension: "png" });
-                  sheet.addImage(imageId, {
-                    tl: { col: startColumn - 1, row: row - 1 },
-                    ext: { width: 220, height: 150 },
-                  });
+                  const prepared = await cachedPictureAsPngBuffer(picture);
+                  const mediaKey =
+                    `master-reference:${picture.sha256 || picture.relativePath}:` +
+                    `${prepared.finalByteLength}`;
+                  let imageId = referenceMediaCache.get(mediaKey);
+                  const report = window.__inspectionCoverExportReport;
+                  if (imageId == null) {
+                    imageId = workbook.addImage({
+                      buffer: prepared.buffer,
+                      extension: prepared.extension,
+                    });
+                    referenceMediaCache.set(mediaKey, imageId);
+                    if (report) {
+                      report.uniqueMediaImages += 1;
+                      report.optimizedTotalImageBytes += prepared.finalByteLength;
+                    }
+                  } else if (report) {
+                    report.reusedMediaReferences += 1;
+                  }
+                  if (report?.sourceAssets) {
+                    const sourceKey =
+                      `master-reference:${picture.sha256 || picture.relativePath}`;
+                    if (!report.sourceAssets.has(sourceKey)) {
+                      report.sourceAssets.add(sourceKey);
+                      report.originalTotalImageBytes += prepared.originalByteLength;
+                    }
+                  }
+                  const targetRange =
+                    `${sheet.getColumn(startColumn).letter}${row}:` +
+                    `${sheet.getColumn(startColumn + 3).letter}${row + 7}`;
+                  sheet.addImage(
+                    imageId,
+                    window.InspectionWorkbookImages.rangeToTwoCellAnchor(
+                      sheet,
+                      targetRange,
+                      { left: 0.04, top: 0.05, right: 0.04, bottom: 0.05 },
+                    ),
+                  );
                 } catch (error) {
                   sheet.mergeCells(row, startColumn, row + 6, startColumn + 3);
                   sheet.getCell(row, startColumn).value = `IMAGE LOAD FAILED\n${error.message || error}`;
@@ -2746,7 +6281,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
           .local-bom-loaded .bom-check-controls,
           .local-bom-loaded .bom-panel__result { display: none !important; }
           .carton-library {
-            margin: 0 0 22px;
+            margin: 0 8px 8px;
             border: 1px solid var(--border, #dbe3ef);
             border-radius: 10px;
             background: var(--surface, #ffffff);
@@ -2799,7 +6334,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
           }
           .carton-library__pictures {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
             gap: 10px;
             padding: 10px;
           }
@@ -2808,15 +6343,33 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
             border: 1px solid var(--border, #dbe3ef);
             border-radius: 8px;
             background: var(--surface, #ffffff);
+            cursor: grab;
             padding: 8px;
+          }
+          .carton-library__picture--dragging {
+            opacity: .55;
+            outline: 2px solid var(--primary, #2563eb);
+            outline-offset: -2px;
+          }
+          .master-carton-library__preview {
+            display: flex;
+            height: 130px;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            border-radius: 6px;
+            background: #ffffff;
           }
           .carton-library__picture img {
             display: block;
             width: 100%;
-            height: 150px;
-            border-radius: 6px;
+            height: 100%;
             background: #ffffff;
             object-fit: contain;
+          }
+          .carton-library__drag-help {
+            color: var(--primary, #2563eb) !important;
+            font-weight: 700;
           }
           .carton-library__filename {
             margin-top: 7px;
@@ -2968,22 +6521,71 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
             const rows = parseWorkbook(await file.arrayBuffer(), file.name);
             if (rows.length) {
               normalizedRows = dedupeRows(rows);
+              window.__inspectionBomRows = normalizedRows;
               bomLoaded = true;
               document.documentElement.classList.add("local-bom-loaded");
               window.setTimeout(refreshSlotHints, 400);
+              window.dispatchEvent(new CustomEvent("inspection-bom-updated"));
               scheduleMasterCartonRender(450);
             }
           } catch {}
         }, true);
 
         const observer = new MutationObserver((mutations) => {
+          if (
+            mutations.some((mutation) =>
+              [...mutation.addedNodes].some((node) =>
+                node.nodeType === 1 &&
+                (
+                  node.id === "master-carton-library-inline-host" ||
+                  node.querySelector?.(
+                    "#master-carton-library-inline-host"
+                  )
+                )
+              )
+            )
+          ) {
+            scheduleMasterCartonRender(40);
+          }
           if (!bomLoaded || hintRendering) return;
           if (mutations.some((mutation) => mutation.target.closest?.(`.${hintClass}`))) return;
+          if (mutations.every((mutation) =>
+            mutation.target.closest?.("[data-local-bom-requirements]")
+          )) return;
           window.clearTimeout(window.__localBomDomTimer);
           window.__localBomDomTimer = window.setTimeout(refreshSlotHints, 220);
         });
+
+        function ensureExportQualityControl() {
+          const generate = document.querySelector(".generate");
+          if (!generate || generate.querySelector(".inspection-export-quality")) {
+            return;
+          }
+          const control = document.createElement("label");
+          control.className = "inspection-export-quality";
+          control.innerHTML = `
+            <span>Export quality</span>
+            <select aria-label="Workbook image export quality">
+              <option value="compact">Compact - smallest workbook</option>
+              <option value="balanced" selected>Balanced - recommended</option>
+              <option value="high">High Detail - larger workbook</option>
+            </select>`;
+          const select = control.querySelector("select");
+          select.addEventListener("change", () => {
+            window.__inspectionExportQuality = select.value;
+          });
+          window.__inspectionExportQuality = select.value;
+          generate.insertBefore(
+            control,
+            generate.querySelector(".generate__btn") || generate.firstChild,
+          );
+        }
+
+        const qualityObserver = new MutationObserver(ensureExportQualityControl);
         document.addEventListener("DOMContentLoaded", () => {
           observer.observe(document.body, { childList: true, subtree: true });
+          qualityObserver.observe(document.body, { childList: true, subtree: true });
+          ensureExportQualityControl();
           schedule(loadSyncedBom);
           scheduleMasterCartonRender(700);
         });
