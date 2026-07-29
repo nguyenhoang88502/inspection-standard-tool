@@ -552,6 +552,228 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         return finalImage;
       };
 
+      var INSPECTION_IMAGE_MARGIN_PX = 6;
+      var INSPECTION_ASPECT_RATIO_TOLERANCE = 0.01;
+
+      function inspectionColumnWidthPx(worksheet, columnNumber) {
+        const column = worksheet.getColumn(columnNumber);
+        if (column.hidden) return 0;
+        const width = column.width ?? worksheet.properties.defaultColWidth ?? 8.43;
+        /*
+         * ExcelJS exposes the OOXML width, which already includes Excel's
+         * character-cell padding. Multiplying by the Calibri 11 maximum-digit
+         * width is the physical pixel measure; adding another 5 px per column
+         * makes multi-column ranges overflow substantially.
+         */
+        return Math.max(1, width * 7.2);
+      }
+
+      function inspectionRowHeightPx(worksheet, rowNumber) {
+        const row = worksheet.getRow(rowNumber);
+        if (row.hidden) return 0;
+        const height =
+          row.height ?? worksheet.properties.defaultRowHeight ?? 15;
+        return Math.max(1, height * 96 / 72);
+      }
+
+      function inspectionRangePixelBounds(worksheet, range) {
+        const coordinates = Ix(range);
+        let left = 0;
+        let top = 0;
+        for (let col = 1; col < coordinates.start.col; col += 1) {
+          left += inspectionColumnWidthPx(worksheet, col);
+        }
+        for (let row = 1; row < coordinates.start.row; row += 1) {
+          top += inspectionRowHeightPx(worksheet, row);
+        }
+        let width = 0;
+        let height = 0;
+        for (
+          let col = coordinates.start.col;
+          col <= coordinates.end.col;
+          col += 1
+        ) {
+          width += inspectionColumnWidthPx(worksheet, col);
+        }
+        for (
+          let row = coordinates.start.row;
+          row <= coordinates.end.row;
+          row += 1
+        ) {
+          height += inspectionRowHeightPx(worksheet, row);
+        }
+        return {
+          ...coordinates,
+          left,
+          top,
+          width: Math.max(1, width),
+          height: Math.max(1, height)
+        };
+      }
+
+      function inspectionNativeColumnAnchor(
+        worksheet,
+        startColumn,
+        pixelOffset
+      ) {
+        let targetAbsolute = Math.max(0, pixelOffset);
+        for (let column = 1; column < startColumn; column += 1) {
+          targetAbsolute += inspectionColumnWidthPx(worksheet, column);
+        }
+        let drawingLeft = 0;
+        let column = 1;
+        while (
+          targetAbsolute >=
+          drawingLeft + Math.round(inspectionColumnWidthPx(worksheet, column))
+        ) {
+          drawingLeft += Math.round(
+            inspectionColumnWidthPx(worksheet, column)
+          );
+          column += 1;
+        }
+        return {
+          nativeCol: column - 1,
+          nativeColOff: Math.round((targetAbsolute - drawingLeft) * 9525)
+        };
+      }
+
+      function inspectionNativeRowAnchor(worksheet, startRow, pixelOffset) {
+        let targetAbsolute = Math.max(0, pixelOffset);
+        for (let row = 1; row < startRow; row += 1) {
+          targetAbsolute += inspectionRowHeightPx(worksheet, row);
+        }
+        let drawingTop = 0;
+        let row = 1;
+        while (
+          targetAbsolute >=
+          drawingTop + Math.round(inspectionRowHeightPx(worksheet, row))
+        ) {
+          drawingTop += Math.round(inspectionRowHeightPx(worksheet, row));
+          row += 1;
+        }
+        return {
+          nativeRow: row - 1,
+          nativeRowOff: Math.round((targetAbsolute - drawingTop) * 9525)
+        };
+      }
+
+      function inspectionContainImageInRange(
+        sourceWidth,
+        sourceHeight,
+        rangeBounds,
+        marginPx = INSPECTION_IMAGE_MARGIN_PX
+      ) {
+        if (
+          !Number.isFinite(sourceWidth) ||
+          !Number.isFinite(sourceHeight) ||
+          sourceWidth <= 0 ||
+          sourceHeight <= 0
+        ) {
+          throw new Error(
+            `Invalid source image dimensions: ${sourceWidth} x ${sourceHeight}.`
+          );
+        }
+        if (
+          !Number.isFinite(rangeBounds.width) ||
+          !Number.isFinite(rangeBounds.height) ||
+          rangeBounds.width <= 0 ||
+          rangeBounds.height <= 0
+        ) {
+          throw new Error(
+            `Invalid target range dimensions: ${rangeBounds.width} x ${rangeBounds.height}.`
+          );
+        }
+
+        const safeMargin = Math.max(
+          0,
+          Math.min(
+            marginPx,
+            Math.floor((rangeBounds.width - 1) / 2),
+            Math.floor((rangeBounds.height - 1) / 2)
+          )
+        );
+        const availableWidth = Math.max(1, rangeBounds.width - safeMargin * 2);
+        const availableHeight = Math.max(1, rangeBounds.height - safeMargin * 2);
+        const scale = Math.min(
+          1,
+          availableWidth / sourceWidth,
+          availableHeight / sourceHeight
+        );
+        const width = Math.max(1, sourceWidth * scale);
+        const height = Math.max(1, sourceHeight * scale);
+        const leftOffset = (rangeBounds.width - width) / 2;
+        const topOffset = (rangeBounds.height - height) / 2;
+        const sourceRatio = sourceWidth / sourceHeight;
+        const outputRatio = width / height;
+        const ratioError = Math.abs(outputRatio / sourceRatio - 1);
+        const epsilon = 0.05;
+
+        if (ratioError > INSPECTION_ASPECT_RATIO_TOLERANCE) {
+          throw new Error(
+            `Aspect ratio changed by ${(ratioError * 100).toFixed(3)}%.`
+          );
+        }
+        if (
+          leftOffset < -epsilon ||
+          topOffset < -epsilon ||
+          leftOffset + width > rangeBounds.width + epsilon ||
+          topOffset + height > rangeBounds.height + epsilon
+        ) {
+          throw new Error("Calculated image placement exceeds its target range.");
+        }
+        return {
+          width,
+          height,
+          leftOffset,
+          topOffset,
+          scale,
+          ratioError,
+          marginPx: safeMargin
+        };
+      }
+
+      function inspectionAddContainedFloatingImage(
+        worksheet,
+        imageId,
+        range,
+        sourceWidth,
+        sourceHeight
+      ) {
+        const bounds = inspectionRangePixelBounds(worksheet, range);
+        const placement = inspectionContainImageInRange(
+          sourceWidth,
+          sourceHeight,
+          bounds
+        );
+        const columnAnchor = inspectionNativeColumnAnchor(
+          worksheet,
+          bounds.start.col,
+          placement.leftOffset
+        );
+        const rowAnchor = inspectionNativeRowAnchor(
+          worksheet,
+          bounds.start.row,
+          placement.topOffset
+        );
+        const anchor = {
+          tl: {
+            ...columnAnchor,
+            ...rowAnchor
+          },
+          ext: {
+            width: placement.width,
+            height: placement.height
+          },
+          editAs: "oneCell"
+        };
+        worksheet.addImage(imageId, anchor);
+        return {
+          ...placement,
+          anchor,
+          bounds
+        };
+      }
+
       qk = async function inspectionInsertAssignmentImage(workbook, slot, finalImage) {
         const report = inspectionCurrentExportReport();
         const worksheetName = slot.sheet === "COVER"
@@ -583,7 +805,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           if (!worksheet) {
             throw new Error(`Worksheet "${worksheetName}" was not found.`);
           }
-          const rangeSize = Ik(worksheet, targetRange);
+          const rangeSize = inspectionRangePixelBounds(
+            worksheet,
+            targetRange
+          );
           const png = await inspectionPngData(
             finalImage,
             Math.min(
@@ -598,23 +823,25 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             extension: parsed.extension
           });
 
-          if (worksheetName === "COVER") {
-            worksheet.addImage(imageId, targetRange);
-          } else {
-            const start = Ix(targetRange).start;
-            const fitted = Fk(png, rangeSize);
-            worksheet.addImage(imageId, {
-              tl: {
-                col: Pk(worksheet, start.col, fitted.leftOffset),
-                row: Ok(worksheet, start.row, fitted.topOffset)
-              },
-              ext: { width: fitted.width, height: fitted.height }
-            });
-          }
+          const placement = inspectionAddContainedFloatingImage(
+            worksheet,
+            imageId,
+            targetRange,
+            png.width,
+            png.height
+          );
 
           item.finalMimeType = `image/${parsed.extension === "jpeg" ? "jpeg" : "png"}`;
           item.finalByteLength = finalByteLength;
           item.imageId = imageId;
+          item.sourceWidth = png.width;
+          item.sourceHeight = png.height;
+          item.outputWidth = placement.width;
+          item.outputHeight = placement.height;
+          item.scale = placement.scale;
+          item.marginPx = placement.marginPx;
+          item.aspectRatioError = placement.ratioError;
+          item.editAs = placement.anchor.editAs;
           item.insertionStatus = "inserted";
           report.preparedImages.push(item);
           report.insertedImages.push(item);
@@ -626,6 +853,15 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           console.log("Source image count:", item.sourceImageCount);
           console.log("Final image byte count:", finalByteLength);
           console.log("Image ID:", imageId);
+          console.log("Floating anchor:", placement.anchor.editAs);
+          console.log(
+            "Contained size:",
+            `${placement.width.toFixed(2)} x ${placement.height.toFixed(2)} px`
+          );
+          console.log(
+            "Aspect ratio error:",
+            `${(placement.ratioError * 100).toFixed(4)}%`
+          );
           console.groupEnd();
           return item;
         } catch (error) {
@@ -715,6 +951,236 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       if (inspectionLegacyColorboxFrontIndex >= 0) {
         Db.splice(inspectionLegacyColorboxFrontIndex, 1);
       }
+
+      var INSPECTION_CATEGORY_CONFIG = {
+        manuals: { label: "Contents inside colorbox", bomLabel: "BOM requirements" },
+        packaging: { label: "Product and marking", bomLabel: "Product requirements" },
+        labels: { label: "Retail colorbox", bomLabel: "Colorbox requirements" },
+        components: { label: "Master carton", bomLabel: "Master-carton requirements" }
+      };
+      var INSPECTION_BOM_LINKED_KEYS = new Set([
+        "ib", "safety", "acessory_bag", "accessory_1", "accessory_2",
+        "accessory_3", "trimmer_hdpe", "fg_colorbox_front",
+        "colorbox_front & colorbox_back", "colorbox_left & colorbox_right",
+        "colorbox_top & colorbox_bottom", "lable_1", "mastercaton_label"
+      ]);
+      var INSPECTION_FIELD_DEFINITIONS = new Map(
+        Uh.map(slot => [
+          slot.templateKey,
+          {
+            displayName: slot.label,
+            category: INSPECTION_CATEGORY_CONFIG[slot.section]?.label || "Inspection image",
+            workbookKey: slot.templateKey,
+            worksheet: slot.sheet,
+            range: INSPECTION_COVER_SLOT_RANGES[slot.templateKey] || slot.range,
+            bomMode: INSPECTION_BOM_LINKED_KEYS.has(slot.templateKey) ? "bom" : "manual"
+          }
+        ])
+      );
+      window.__inspectionFieldDefinitions = Object.fromEntries(INSPECTION_FIELD_DEFINITIONS);
+
+      function inspectionFieldDefinition(slot) {
+        return INSPECTION_FIELD_DEFINITIONS.get(slot.templateKey) || {
+          displayName: slot.label,
+          category: "Inspection image",
+          workbookKey: slot.templateKey,
+          worksheet: slot.sheet,
+          range: slot.range,
+          bomMode: "manual"
+        };
+      }
+
+      function inspectionHighlightWorkbookKey(workbookKey, scrollToCard = false) {
+        document.querySelectorAll(".inspection-link-highlight").forEach(node => {
+          node.classList.remove("inspection-link-highlight");
+        });
+        const escapedKey = CSS.escape(workbookKey);
+        const card = document.querySelector(
+          `.slot-card[data-workbook-key="${escapedKey}"]`
+        );
+        const requirements = document.querySelectorAll(
+          `.inspection-bom-requirement[data-workbook-key="${escapedKey}"]`
+        );
+        card?.classList.add("inspection-link-highlight");
+        requirements.forEach(node => node.classList.add("inspection-link-highlight"));
+        if (scrollToCard && card) {
+          card.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+      }
+
+      h8 = function inspectionSlotSection({
+        title, slots, assignments, activeAssetKey, imageMap, locale,
+        onClear, onCrop, onDragEnter, onDragLeave, onDrop, onAutoCrop, onReplace
+      }) {
+        const sectionKey = slots[0]?.section || "manuals";
+        const category = INSPECTION_CATEGORY_CONFIG[sectionKey] ||
+          INSPECTION_CATEGORY_CONFIG.manuals;
+        return mt.jsxs("section", {
+          className: "slot-section",
+          "data-inspection-section": sectionKey,
+          children: [
+            mt.jsx("h3", { className: "slot-section__title", children: title }),
+            mt.jsxs("div", {
+              className: "slot-section__layout",
+              children: [
+                mt.jsx("div", {
+                  className: "slot-grid",
+                  children: slots.map(slot => mt.jsx(d8, {
+                    slot, assignments, activeAssetKey, imageMap, locale,
+                    onClear, onCrop, onDragEnter, onDragLeave, onDrop,
+                    onAutoCrop, onReplace
+                  }, slot.id))
+                }),
+                mt.jsxs("aside", {
+                  className: "inspection-bom-requirements",
+                  "data-local-bom-requirements": sectionKey,
+                  "aria-label": category.bomLabel,
+                  children: [
+                    mt.jsxs("div", {
+                      className: "inspection-bom-requirements__header",
+                      children: [
+                        mt.jsx("strong", { children: category.bomLabel }),
+                        mt.jsx("span", {
+                          children: locale === "vi"
+                            ? "Chọn mục để tìm thẻ"
+                            : "Select an item to find its card"
+                        })
+                      ]
+                    }),
+                    mt.jsx("div", {
+                      className: "inspection-bom-requirements__list",
+                      children: slots.map(slot => {
+                        const definition = inspectionFieldDefinition(slot);
+                        const assignedCount = slot.assetKeys.filter(
+                          key => assignments[key]
+                        ).length;
+                        const status = assignedCount === slot.assetKeys.length
+                          ? "assigned"
+                          : assignedCount > 0
+                            ? "partial"
+                            : definition.bomMode === "manual"
+                              ? "manual-only"
+                              : "missing";
+                        return mt.jsxs("button", {
+                          type: "button",
+                          className:
+                            `inspection-bom-requirement inspection-bom-requirement--${status}`,
+                          "data-workbook-key": definition.workbookKey,
+                          onClick: () => inspectionHighlightWorkbookKey(
+                            definition.workbookKey,
+                            true
+                          ),
+                          children: [
+                            mt.jsxs("span", {
+                              className: "inspection-bom-requirement__copy",
+                              children: [
+                                mt.jsx("strong", { children: definition.displayName }),
+                                mt.jsx("small", {
+                                  children: `${definition.category} · ${definition.workbookKey}`
+                                })
+                              ]
+                            }),
+                            mt.jsx("span", {
+                              className: "inspection-bom-requirement__status",
+                              children: status.replace("-", " ")
+                            })
+                          ]
+                        }, slot.id);
+                      })
+                    })
+                  ]
+                })
+              ]
+            })
+          ]
+        });
+      };
+
+      d8 = function inspectionSlotCard({
+        slot, assignments, activeAssetKey, imageMap, locale, onClear, onCrop,
+        onDragEnter, onDragLeave, onDrop, onAutoCrop, onReplace
+      }) {
+        const assigned = slot.assetKeys.every(key => assignments[key]);
+        const copy = Py[locale];
+        const definition = inspectionFieldDefinition(slot);
+        return mt.jsxs("article", {
+          className: `slot-card ${assigned ? "slot-card--assigned" : ""}`,
+          "data-slot-id": slot.id,
+          "data-workbook-key": definition.workbookKey,
+          onClick: () => inspectionHighlightWorkbookKey(definition.workbookKey),
+          children: [
+            mt.jsxs("div", {
+              className: "slot-card__meta",
+              children: [
+                mt.jsxs("span", {
+                  className: "slot-card__identity",
+                  children: [
+                    mt.jsx("strong", {
+                      className: "slot-card__label",
+                      children: definition.displayName
+                    }),
+                    mt.jsx("small", {
+                      className: "slot-card__category",
+                      children: definition.category
+                    })
+                  ]
+                }),
+                mt.jsx("span", {
+                  className: "slot-card__target",
+                  children: `${definition.worksheet}!${definition.range}`
+                })
+              ]
+            }),
+            mt.jsx("div", {
+              className:
+                `slot-card__body ${
+                  slot.mergeDirection === "vertical"
+                    ? "slot-card__body--vertical"
+                    : slot.assetKeys.length > 1
+                      ? "slot-card__body--horizontal"
+                      : ""
+                }`,
+              children: slot.assetKeys.map(assetKey => {
+                const imageId = assignments[assetKey];
+                const assignedImage = imageId ? imageMap.get(imageId) : undefined;
+                return mt.jsx(f8, {
+                  assetKey, assignedImage, isActive: activeAssetKey === assetKey,
+                  locale, onClear, onCrop, onDragEnter, onDragLeave, onDrop,
+                  slot, onAutoCrop, onReplace
+                }, assetKey);
+              })
+            }),
+            mt.jsxs("div", {
+              className: "slot-card__footer",
+              children: [
+                mt.jsx("span", {
+                  className: "slot-card__workbook-key",
+                  children: definition.workbookKey
+                }),
+                mt.jsx("button", {
+                  type: "button",
+                  className: "slot-card__autocrop",
+                  disabled: !slot.assetKeys.some(key => assignments[key]),
+                  onClick: event => {
+                    event.stopPropagation();
+                    slot.assetKeys.forEach(assetKey => {
+                      const imageId = assignments[assetKey];
+                      const image = imageId ? imageMap.get(imageId) : undefined;
+                      if (image) onAutoCrop(assetKey, image, slot);
+                    });
+                  },
+                  children: copy.autoCrop
+                }),
+                mt.jsx("span", {
+                  children: slot.assetKeys.length > 1
+                    ? copy.autoMerged
+                    : copy.directInsert
+                })
+              ]
+            })
+          ]
+        });
+      };
 
       f8 = function inspectionAssetTarget({
         assetKey,
@@ -893,6 +1359,412 @@ https://github.com/nodeca/pako/blob/main/LICENSE
               })
         });
       };
+
+      f8 = function inspectionContainedAssetTarget({
+        assetKey,
+        assignedImage,
+        isActive,
+        locale,
+        onClear,
+        onCrop,
+        onDragEnter,
+        onDragLeave,
+        onDrop,
+        slot,
+        onAutoCrop,
+        onReplace
+      }) {
+        const copy = Py[locale];
+        const linkedFront =
+          slot.id === "colorbox_front_back" && assetKey === "fg_colorbox_front";
+        const label = linkedFront
+          ? locale === "vi"
+            ? "Mặt trước — liên kết từ FG Colorbox Front"
+            : "Front — linked from FG Colorbox Front"
+          : copy.assetLabels[assetKey] ?? Ry(assetKey);
+        const definition = inspectionFieldDefinition(slot);
+        const fieldMeta = `${definition.category} · ${definition.workbookKey}`;
+
+        if (linkedFront) {
+          return mt.jsx("div", {
+            className:
+              `asset-target asset-target--linked ${assignedImage ? "asset-target--assigned" : ""}`,
+            "aria-label": label,
+            children: assignedImage
+              ? mt.jsxs("div", {
+                  className: "asset-target__preview",
+                  children: [
+                    mt.jsx("span", {
+                      className: "asset-target__name",
+                      children: label
+                    }),
+                    mt.jsx("div", {
+                      className: "asset-target__preview-image",
+                      children: mt.jsx("img", {
+                        src: assignedImage.previewUrl,
+                        alt: label,
+                        draggable: false
+                      })
+                    }),
+                    mt.jsx("span", {
+                      className: "asset-target__filename",
+                      children: assignedImage.file.name || copy.pastedImage
+                    }),
+                    mt.jsx("span", {
+                      className: "asset-target__field-meta",
+                      children: fieldMeta
+                    })
+                  ]
+                })
+              : mt.jsxs("div", {
+                  className: "asset-target__placeholder",
+                  children: [
+                    mt.jsx("span", {
+                      className: "asset-target__name",
+                      children: label
+                    }),
+                    mt.jsx("span", {
+                      className: "asset-target__hint",
+                      children: locale === "vi"
+                        ? "Gán hình trong thẻ FG Colorbox Front"
+                        : "Assign the image in FG Colorbox Front"
+                    }),
+                    mt.jsx("span", {
+                      className: "asset-target__field-meta",
+                      children: fieldMeta
+                    })
+                  ]
+                })
+          });
+        }
+
+        const startDrag = (event, imageId) => {
+          window.__inspectionDragImageId = imageId;
+          event.dataTransfer.setData(Iy, imageId);
+          event.dataTransfer.setData("text/plain", imageId);
+          event.dataTransfer.effectAllowed = "move";
+        };
+        return mt.jsx("div", {
+          className:
+            `asset-target ${assignedImage ? "asset-target--assigned" : ""} ` +
+            `${isActive ? "asset-target--active" : ""}`,
+          onDragOver: event => {
+            event.preventDefault();
+            if (!isActive) onDragEnter(assetKey);
+          },
+          onDragEnter: () => {
+            if (!isActive) onDragEnter(assetKey);
+          },
+          onDragLeave: event => {
+            if (
+              !(event.relatedTarget instanceof Node) ||
+              !event.currentTarget.contains(event.relatedTarget)
+            ) {
+              onDragLeave();
+            }
+          },
+          onDrop: event => onDrop(event, assetKey),
+          children: assignedImage
+            ? mt.jsxs("div", {
+                className: "asset-target__preview",
+                draggable: true,
+                onPointerDown: () => {
+                  window.__inspectionDragImageId = assignedImage.id;
+                },
+                onDragStart: event => startDrag(event, assignedImage.id),
+                onDragEnd: () => {
+                  window.__inspectionDragImageId = null;
+                },
+                children: [
+                  mt.jsx("div", {
+                    className: "asset-target__preview-image",
+                    children: mt.jsx("img", {
+                      src: assignedImage.previewUrl,
+                      alt: label,
+                      draggable: false
+                    })
+                  }),
+                  mt.jsx("span", {
+                    className: "asset-target__filename",
+                    children: assignedImage.file.name || copy.pastedImage
+                  }),
+                  mt.jsx("span", {
+                    className: "asset-target__field-meta",
+                    children: fieldMeta
+                  }),
+                  mt.jsxs("div", {
+                    className: "asset-target__controls",
+                    children: [
+                      mt.jsx("button", {
+                        type: "button",
+                        className: "asset-target__crop",
+                        onMouseDown: event => event.stopPropagation(),
+                        onClick: event => {
+                          event.stopPropagation();
+                          onCrop(assignedImage);
+                        },
+                        children: copy.crop
+                      }),
+                      mt.jsx("button", {
+                        type: "button",
+                        className: "asset-target__rotate asset-target__rotate--left",
+                        title: copy.rotateLeft,
+                        onMouseDown: event => event.stopPropagation(),
+                        onClick: async event => {
+                          event.stopPropagation();
+                          if (onReplace) {
+                            onReplace(
+                              assignedImage.id,
+                              await rotateImageFile(assignedImage, -90)
+                            );
+                          }
+                        },
+                        children: "↶"
+                      }),
+                      mt.jsx("button", {
+                        type: "button",
+                        className: "asset-target__rotate asset-target__rotate--right",
+                        title: copy.rotateRight,
+                        onMouseDown: event => event.stopPropagation(),
+                        onClick: async event => {
+                          event.stopPropagation();
+                          if (onReplace) {
+                            onReplace(
+                              assignedImage.id,
+                              await rotateImageFile(assignedImage, 90)
+                            );
+                          }
+                        },
+                        children: "↷"
+                      }),
+                      mt.jsx("button", {
+                        type: "button",
+                        className: "asset-target__clear",
+                        onMouseDown: event => event.stopPropagation(),
+                        onClick: event => {
+                          event.stopPropagation();
+                          onClear(assetKey);
+                        },
+                        children: copy.clear
+                      })
+                    ]
+                  })
+                ]
+              })
+            : mt.jsxs("div", {
+                className: "asset-target__placeholder",
+                children: [
+                  mt.jsx("span", {
+                    className: "asset-target__name",
+                    children: label
+                  }),
+                  mt.jsx("span", {
+                    className: "asset-target__hint",
+                    children: copy.dropHere
+                  }),
+                  mt.jsx("span", {
+                    className: "asset-target__field-meta",
+                    children: fieldMeta
+                  })
+                ]
+              })
+        });
+      };
+
+      var inspectionPlacementUiStyle = document.createElement("style");
+      inspectionPlacementUiStyle.id = "inspection-placement-ui-style";
+      inspectionPlacementUiStyle.textContent = `
+        .slot-section__layout {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) minmax(210px, 260px);
+          gap: 12px;
+          align-items: start;
+        }
+        .slot-grid {
+          grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+          min-width: 0;
+        }
+        .slot-card { min-height: 0; overflow: visible; }
+        .slot-card__identity { display: grid; gap: 3px; min-width: 0; }
+        .slot-card__category,
+        .asset-target__field-meta {
+          color: var(--text-muted);
+          font-size: 10px;
+          line-height: 1.3;
+          overflow-wrap: anywhere;
+        }
+        .slot-card__target {
+          max-width: 48%;
+          overflow-wrap: anywhere;
+          text-align: right;
+        }
+        .slot-card__body,
+        .asset-target,
+        .asset-target__placeholder,
+        .asset-target__preview { min-height: 0; }
+        .asset-target,
+        .asset-target__placeholder,
+        .asset-target__preview { overflow: hidden; }
+        .asset-target__preview {
+          gap: 6px;
+          padding: 7px;
+          cursor: grab;
+          background: var(--surface-muted);
+          color: var(--text-body);
+        }
+        .asset-target__preview-image {
+          display: flex;
+          height: 150px;
+          min-height: 118px;
+          align-items: center;
+          justify-content: center;
+          overflow: hidden;
+          border: 1px solid var(--border);
+          border-radius: 6px;
+          background: #ffffff;
+        }
+        .asset-target__preview-image img,
+        .asset-target__preview img,
+        .image-thumb img {
+          display: block;
+          width: 100%;
+          height: 100%;
+          max-width: 100%;
+          max-height: 100%;
+          object-fit: contain;
+        }
+        .asset-target__filename {
+          padding: 0;
+          color: var(--text-body);
+          font-size: 11px;
+        }
+        .asset-target__controls {
+          display: flex;
+          gap: 5px;
+          align-items: center;
+          flex-wrap: wrap;
+          padding-top: 2px;
+        }
+        .asset-target__controls .asset-target__crop,
+        .asset-target__controls .asset-target__rotate,
+        .asset-target__controls .asset-target__clear {
+          position: static;
+          inset: auto;
+          border: 1px solid var(--border);
+          border-radius: 6px;
+          background: var(--surface);
+          color: var(--text-body);
+          font-size: 11px;
+          font-weight: 700;
+          line-height: 1;
+          padding: 6px 8px;
+        }
+        .asset-target__controls .asset-target__clear {
+          margin-left: auto;
+          border-color: var(--danger-border);
+          color: var(--danger);
+        }
+        .asset-target--linked .asset-target__name { color: var(--text-body); }
+        .inspection-bom-requirements {
+          position: sticky;
+          top: 12px;
+          min-width: 0;
+          overflow: hidden;
+          border: 1px solid var(--border);
+          border-radius: 8px;
+          background: var(--surface);
+        }
+        .inspection-bom-requirements__header {
+          display: grid;
+          gap: 3px;
+          padding: 9px 10px;
+          border-bottom: 1px solid var(--border);
+          color: var(--text);
+          font-size: 12px;
+        }
+        .inspection-bom-requirements__header span {
+          color: var(--text-muted);
+          font-size: 10px;
+          font-weight: 400;
+        }
+        .inspection-bom-requirements__list {
+          display: grid;
+          gap: 5px;
+          max-height: 440px;
+          overflow: auto;
+          padding: 7px;
+        }
+        .inspection-bom-requirement {
+          display: flex;
+          width: 100%;
+          min-width: 0;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 7px;
+          border: 1px solid var(--border);
+          border-radius: 6px;
+          background: var(--surface-muted);
+          color: var(--text-body);
+          cursor: pointer;
+          padding: 6px 7px;
+          text-align: left;
+        }
+        .inspection-bom-requirement__copy {
+          display: grid;
+          min-width: 0;
+          gap: 2px;
+        }
+        .inspection-bom-requirement__check {
+          display: flex;
+          min-width: 0;
+          align-items: flex-start;
+          gap: 6px;
+          cursor: pointer;
+        }
+        .inspection-bom-requirement__check input {
+          flex: 0 0 auto;
+          margin: 2px 0 0;
+        }
+        .inspection-bom-requirement__copy strong {
+          font-size: 11px;
+          overflow-wrap: anywhere;
+        }
+        .inspection-bom-requirement__copy small {
+          color: var(--text-muted);
+          font-size: 9px;
+          overflow-wrap: anywhere;
+        }
+        .inspection-bom-requirement__status {
+          flex: 0 0 auto;
+          border-radius: 999px;
+          background: var(--surface-soft);
+          color: var(--text-muted);
+          font-size: 8px;
+          font-weight: 800;
+          padding: 3px 5px;
+          text-transform: uppercase;
+        }
+        .inspection-bom-requirement--assigned
+          .inspection-bom-requirement__status {
+          background: #dcfce7;
+          color: #166534;
+        }
+        .inspection-bom-requirement--missing
+          .inspection-bom-requirement__status {
+          background: var(--danger-soft);
+          color: var(--danger);
+        }
+        .inspection-link-highlight {
+          border-color: var(--primary) !important;
+          box-shadow: 0 0 0 3px var(--primary-soft) !important;
+        }
+        @media (max-width: 900px) {
+          .slot-section__layout { grid-template-columns: 1fr; }
+          .inspection-bom-requirements { position: static; }
+          .inspection-bom-requirements__list { max-height: 260px; }
+        }
+      `;
+      document.head.appendChild(inspectionPlacementUiStyle);
 
     </script>
 
@@ -1355,7 +2227,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
           const targetIndex = card ? [...card.querySelectorAll(".asset-target")].indexOf(target) : -1;
           const pairedKeys = {
             "trimmer_front & trimmer_back": ["trimmer_front", "trimmer_back"],
-            "colorbox_front & colorbox_back": ["colorbox_front", "colorbox_back"],
+            "colorbox_front & colorbox_back": ["fg_colorbox_front", "colorbox_back"],
             "colorbox_left & colorbox_right": ["colorbox_left", "colorbox_right"],
             "colorbox_top & colorbox_bottom": ["colorbox_top", "colorbox_bottom"],
             "mastercarton_sides": ["mastercarton_left", "mastercarton_right"],
@@ -1389,29 +2261,69 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
             const rows = rowsForCurrentFg();
             if (!rows.length) return;
             const renderedCheckKeys = new Set();
-            for (const target of document.querySelectorAll(".asset-target")) {
-              const key = detectAssetKey(target);
-              if (!key) continue;
-              const matches = getRowsForAsset(key, rows).filter((row) => {
-                const checkKey = hintKey(row);
-                if (renderedCheckKeys.has(checkKey)) return false;
-                renderedCheckKeys.add(checkKey);
-                return true;
-              });
-              if (!matches.length) continue;
-              const uncheckedMatches = matches.filter((row) => !checkedHintKeys.has(hintKey(row)));
-              const hint = document.createElement("div");
-              hint.className = hintClass;
-              hint.innerHTML = [
-                `<div class="${hintClass}__title">${escapeHtml(targetHasAssignedImage(target) ? "BOM check" : lackTitle(uncheckedMatches))}</div>`,
-                ...matches.map((row) => {
-                  const checkKey = hintKey(row);
-                  const checked = checkedHintKeys.has(checkKey) ? " checked" : "";
-                  return `<label class="${hintClass}__row"><input type="checkbox" data-local-bom-check="${escapeHtml(checkKey)}"${checked}><span class="${hintClass}__copy"><span class="${hintClass}__code">${escapeHtml(row.itemNumber)}</span><span class="${hintClass}__name">${escapeHtml(row.productName)}</span></span></label>`;
-                })
-              ].join("");
-              target.classList.add("local-bom-target-with-hint");
-              target.appendChild(hint);
+            for (const panel of document.querySelectorAll("[data-local-bom-requirements]")) {
+              const section = panel.closest(".slot-section");
+              const list = panel.querySelector(".inspection-bom-requirements__list");
+              if (!section || !list) continue;
+              const entries = [];
+              for (const card of section.querySelectorAll(".slot-card")) {
+                const workbookKey = card.getAttribute("data-workbook-key") || "";
+                const fieldDefinition =
+                  window.__inspectionFieldDefinitions?.[workbookKey] || {};
+                const cardMatches = [];
+                for (const target of card.querySelectorAll(".asset-target")) {
+                  const assetKey = detectAssetKey(target);
+                  if (!assetKey) continue;
+                  for (const row of getRowsForAsset(assetKey, rows)) {
+                    const checkKey = hintKey(row);
+                    if (renderedCheckKeys.has(checkKey)) continue;
+                    renderedCheckKeys.add(checkKey);
+                    cardMatches.push({
+                      row,
+                      checkKey,
+                      assigned: targetHasAssignedImage(target)
+                    });
+                  }
+                }
+                if (cardMatches.length) {
+                  for (const match of cardMatches) {
+                    const checked = checkedHintKeys.has(match.checkKey)
+                      ? " checked"
+                      : "";
+                    const status = match.assigned
+                      ? "assigned"
+                      : checked
+                        ? "checked"
+                        : "missing";
+                    entries.push(
+                      `<div class="inspection-bom-requirement inspection-bom-requirement--${status}" role="button" tabindex="0" data-workbook-key="${escapeHtml(workbookKey)}">` +
+                        `<label class="inspection-bom-requirement__check">` +
+                          `<input type="checkbox" data-local-bom-check="${escapeHtml(match.checkKey)}"${checked}>` +
+                          `<span class="inspection-bom-requirement__copy">` +
+                            `<strong>${escapeHtml(match.row.itemNumber)}</strong>` +
+                            `<small>${escapeHtml(match.row.productName)}</small>` +
+                            `<small>${escapeHtml(fieldDefinition.displayName || workbookKey)} · ${escapeHtml(workbookKey)}</small>` +
+                          `</span>` +
+                        `</label>` +
+                        `<span class="inspection-bom-requirement__status">${escapeHtml(status)}</span>` +
+                      `</div>`
+                    );
+                  }
+                } else {
+                  const manualOnly = fieldDefinition.bomMode === "manual";
+                  const status = manualOnly ? "manual-only" : "missing";
+                  entries.push(
+                    `<div class="inspection-bom-requirement inspection-bom-requirement--${status}" role="button" tabindex="0" data-workbook-key="${escapeHtml(workbookKey)}">` +
+                      `<span class="inspection-bom-requirement__copy">` +
+                        `<strong>${escapeHtml(fieldDefinition.displayName || workbookKey)}</strong>` +
+                        `<small>${escapeHtml(fieldDefinition.category || "Inspection image")} · ${escapeHtml(workbookKey)}</small>` +
+                      `</span>` +
+                      `<span class="inspection-bom-requirement__status">${manualOnly ? "manual only" : "missing"}</span>` +
+                    `</div>`
+                  );
+                }
+              }
+              list.innerHTML = entries.join("");
             }
           } finally {
             hintRendering = false;
@@ -2011,6 +2923,21 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
         document.head.appendChild(style);
 
         document.addEventListener("click", (event) => {
+          const requirement = event.target.closest?.(".inspection-bom-requirement");
+          if (requirement && !event.target.closest?.("[data-local-bom-check]")) {
+            const workbookKey = requirement.getAttribute("data-workbook-key") || "";
+            document.querySelectorAll(".inspection-link-highlight").forEach((node) => {
+              node.classList.remove("inspection-link-highlight");
+            });
+            requirement.classList.add("inspection-link-highlight");
+            const escapedKey = CSS.escape(workbookKey);
+            const card = document.querySelector(
+              `.slot-card[data-workbook-key="${escapedKey}"]`
+            );
+            card?.classList.add("inspection-link-highlight");
+            card?.scrollIntoView({ behavior: "smooth", block: "center" });
+            return;
+          }
           const button = event.target.closest?.(".bom-panel__refresh");
           if (!button) return;
           event.preventDefault();
