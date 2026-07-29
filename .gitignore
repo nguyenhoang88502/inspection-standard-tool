@@ -1,0 +1,5 @@
+system/cache/
+system/generated/
+system/logs/
+system/tmp-relocation-test/
+system/tmp-template-audit/
