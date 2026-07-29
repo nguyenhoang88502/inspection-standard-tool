@@ -1,8 +1,9 @@
 $ErrorActionPreference = 'Stop'
 
 # === Schema versions ===
-$CacheSchemaVersion = '2.0'
-$ParserVersion = '1.0'
+$CacheSchemaVersion = '3.0'
+$ParserVersion = '2.1'
+$ReferenceIndexVersion = '1.0'
 
 # === CLI arguments ===
 $forceRebuild   = $args -contains '--force-rebuild'
@@ -246,10 +247,83 @@ function Write-AtomicIni {
   }
 }
 
+function Write-AtomicText {
+  param([string]$FilePath, [string]$TextContent)
+  $tmpPath = "$FilePath.tmp"
+  try {
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($tmpPath, $TextContent, $utf8NoBom)
+    if (-not (Test-Path -LiteralPath $tmpPath)) { throw "Temp file was not created: $tmpPath" }
+    if ((Get-Item -LiteralPath $tmpPath).Length -eq 0 -and $TextContent.Length -gt 0) { throw "Temp file is empty: $tmpPath" }
+    Move-Item -LiteralPath $tmpPath -Destination $FilePath -Force
+  } catch {
+    if (Test-Path -LiteralPath $tmpPath) { Remove-Item -LiteralPath $tmpPath -Force -ErrorAction SilentlyContinue }
+    throw
+  }
+}
+
+function Normalize-BomText {
+  param([object]$Value)
+  if ($null -eq $Value) { return '' }
+  return ([regex]::Replace(([string]$Value), '[\x00-\x20]+', ' ')).Trim()
+}
+
+function Get-BomUiCategory {
+  param([string]$ProductName, [string]$Type)
+  $text = "$ProductName $Type"
+  if ($text -match '(?i)master\s*carton|mastercarton|shipping\s*carton|shipper|\bhsc\b|overpack|outer\s*carton|export\s*carton') {
+    return 'components'
+  }
+  if ($text -match '(?i)color\s*box|colorbox|graphic\s*card|primary\s*packaging|retail\s*packaging|packaging\s*sleeve|mailer\s*box|retail\s*label|sticker|rating|compliance|nameplate|\bupc\b|\bean\b|serial|ross|checkpoint|sensormatic|\bnom\b') {
+    return 'labels'
+  }
+  if ($text -match '(?i)instruction|manual|pictorial|warranty|warning|safety|booklet|accessor(y|ies)|comb|guard|head|attachment|guide|cleaning\s*brush|brush\s*cleaning|storage\s*case|pouch|(?:pe|hdpe|pe[-\s]?hd|inner|internal).{0,20}\bbag\b|\bbag\b.{0,20}(?:pe|hdpe|pe[-\s]?hd|inner|internal)') {
+    return 'manuals'
+  }
+  return 'packaging'
+}
+
+function Get-BomUiCategoryLabel {
+  param([string]$CategoryKey)
+  switch ($CategoryKey) {
+    'manuals' { return 'Accessory' }
+    'labels' { return 'Colorbox' }
+    'components' { return 'Master carton' }
+    default { return 'Product and marking' }
+  }
+}
+
+function Get-BomMappedAssetKeys {
+  param([string]$ProductName, [string]$Type)
+  $text = "$ProductName $Type"
+  $keys = [System.Collections.Generic.List[string]]::new()
+  if ($text -match '(?i)instruction\s*books?|user\s*manual|manual|pictorial|warranty\s*card|warning\s*book|booklet') { $keys.Add('ib') }
+  if ($text -match '(?i)safety\s*(instruction\s*)?sheet|instruction\s*sheet|warnings?\s*&?\s*dangers?|warning\s*sheet') { $keys.Add('safety') }
+  if ($text -match '(?i)accessor(y|ies)\s*(bag|pouch|case)|storage\s*case|soft\s*case|pouch') { $keys.Add('acessory_bag') }
+  if ($text -match '(?i)(?:pe|hdpe|pe[-\s]?hd|inner|internal).{0,20}\bbag\b|\bbag\b.{0,20}(?:pe|hdpe|pe[-\s]?hd|inner|internal)') { $keys.Add('trimmer_hdpe') }
+  if ($text -match '(?i)graphic\s*card|box\s*front|color\s*box|colorbox|printed\s*color\s*box|primary\s*packaging|retail\s*packaging|front.{0,30}graphic') { $keys.Add('fg_colorbox_front') }
+  if ($text -match '(?i)graphic\s*card|printed\s*graphic\s*card|printed\s*color\s*box|color\s*box|colorbox|primary\s*packaging|retail\s*packaging|packaging\s*sleeve|mailer\s*box') {
+    @('colorbox_front','colorbox_back','colorbox_left','colorbox_right','colorbox_top','colorbox_bottom') | ForEach-Object { $keys.Add($_) }
+  }
+  if ($text -match '(?i)(master\s*carton|mastercarton|carton|shipper|hsc).{0,40}labels?|labels?.{0,40}(master\s*carton|mastercarton|carton|shipper|hsc)') { $keys.Add('mastercaton_label') }
+  if (($text -match '(?i)\bretail\s*label\b|\blabels?\b|\bsticker\b|\brating\b|\bcompliance\b|\bnameplate\b|\bupc\b|\bean\b|\bserial\b|\bross\b|\bcheckpoint\b|\bsensormatic\b|\bnom\s+label\b') -and
+      ($text -notmatch '(?i)master\s*carton|mastercarton|shipper|hsc|instruction|manual|book')) { $keys.Add('lable_1') }
+  if ($text -match '(?i)pad\s*print|padprint|printing|logo|artwork|ink\s*tampastar') { $keys.Add('pad_print') }
+  if ($text -match '(?i)lazer|laser|engraving|marking|final.{0,20}graphic') { $keys.Add('lazer_actual') }
+  if (($text -match '(?i)master\s*carton|mastercarton|shipping\s*carton|shipper|\bhsc\b|overpack|outer\s*carton|export\s*carton') -and
+      ($text -notmatch '(?i)label|sticker|barcode|\bupc\b|\bnom\b')) {
+    @('colorboxes_packed_mastercarton','mastercarton_left','mastercarton_right','mastercarton_top','mastercarton_bottom','mastercarton_front','mastercarton_back') | ForEach-Object { $keys.Add($_) }
+  }
+  return (($keys | Select-Object -Unique) -join ';')
+}
+
 # === Cache file paths ===
 $cacheStatePath      = Join-Path $cacheDir 'inspection_bom_cache_state.ini'
 $manifestPath        = Join-Path $generatedDir 'inspection_bom_manifest.json'
 $preparedDataPath    = Join-Path $generatedDir 'inspection_bom_data.json'
+$preparedCsvPath     = Join-Path $generatedDir 'inspection_bom_level1.csv'
+$referenceIndexPath  = Join-Path $cacheDir 'bom_level_reference_index.csv'
+$referenceStatePath  = Join-Path $cacheDir 'bom_level_reference_state.ini'
 $stagedWorkbookPath  = Join-Path $generatedDir 'inspection_bom_source.xlsx'
 $pictureIndexPath    = Join-Path $generatedDir 'master_carton_picture_index.json'
 $pictureCacheDir     = Join-Path $cacheDir 'master-carton-pictures'
@@ -263,7 +337,7 @@ if (-not (Test-Path -LiteralPath $pictureCacheDir)) {
 # === --clear-cache ===
 if ($clearCache) {
   Write-Log "Clear-cache requested. Removing Inspection Standard cache files..."
-  @($cacheStatePath, $manifestPath, $preparedDataPath, $stagedWorkbookPath, $legacyManifestPath) | ForEach-Object {
+  @($cacheStatePath, $manifestPath, $preparedDataPath, $preparedCsvPath, $referenceIndexPath, $referenceStatePath, $stagedWorkbookPath, $legacyManifestPath) | ForEach-Object {
     if (Test-Path -LiteralPath $_) {
       Remove-Item -LiteralPath $_ -Force -ErrorAction SilentlyContinue
       Write-Log "  Removed: $_"
@@ -291,6 +365,32 @@ if ($config.ContainsKey('Launcher') -and
 $bomPattern = 'BOM & FORMULA*D365.xlsx'
 if ($config.ContainsKey('Files') -and $config['Files'].ContainsKey('BomPattern') -and $config['Files']['BomPattern']) {
   $bomPattern = $config['Files']['BomPattern']
+}
+
+$bomLevelReferencePath = ''
+if ($config.ContainsKey('Files') -and
+    $config['Files'].ContainsKey('BomLevelReferencePath') -and
+    $config['Files']['BomLevelReferencePath']) {
+  $bomLevelReferencePath = $config['Files']['BomLevelReferencePath']
+  if (-not [System.IO.Path]::IsPathRooted($bomLevelReferencePath)) {
+    $bomLevelReferencePath = [System.IO.Path]::GetFullPath((Join-Path $AppRoot $bomLevelReferencePath))
+  }
+}
+
+$referenceInfo = $null
+$referenceFullPath = ''
+$referenceLength = '0'
+$referenceModifiedUtc = ''
+if ($bomLevelReferencePath -and (Test-Path -LiteralPath $bomLevelReferencePath -PathType Leaf)) {
+  $referenceInfo = Get-Item -LiteralPath $bomLevelReferencePath
+  $referenceFullPath = $referenceInfo.FullName
+  $referenceLength = $referenceInfo.Length.ToString()
+  $referenceModifiedUtc = $referenceInfo.LastWriteTimeUtc.ToString('o')
+  Write-Log "BOM Level reference: $referenceFullPath"
+} elseif ($bomLevelReferencePath) {
+  Write-Log "WARNING: BOM Level reference does not exist: $bomLevelReferencePath"
+} else {
+  Write-Log "WARNING: BomLevelReferencePath is not configured; only conservative name/type fallback will be available."
 }
 
 # === BOM directory discovery (same priority as Master Carton launcher) ===
@@ -447,13 +547,36 @@ if ($resolvedWeeklyBomDir -and (Test-Path -LiteralPath $resolvedWeeklyBomDir)) {
     @{ Expression='LastWriteTimeUtc'; Descending=$true },
     @{ Expression='Name'; Descending=$true })
 
-  # Validate and select
+  # Select newest usable workbook. A metadata-identical cache source has already
+  # passed structural validation, so fresh launches avoid reopening large XLSX
+  # files. When metadata or parser/schema changes, validate candidates in order
+  # and stop at the first valid workbook.
+  $selectionCache = $null
+  if (-not $forceRebuild -and (Test-Path -LiteralPath $cacheStatePath)) {
+    try {
+      $selectionState = Read-IniFile -FilePath $cacheStatePath
+      if ($selectionState.ContainsKey('BomWorkbook')) {
+        $selectionCache = $selectionState['BomWorkbook']
+      }
+    } catch {}
+  }
+
+  $selectedReason = ""
   foreach ($candidate in $sortedCandidates) {
     Write-Log "  Candidate: $($candidate.Name) ($($candidate.Length) bytes, modified $($candidate.LastWriteTimeUtc.ToString('o')))"
+    $metadataMatchesCache = $selectionCache -and
+      ($selectionCache['SourceFullPath'] -eq $candidate.File.FullName) -and
+      ($selectionCache['SourceLength'] -eq $candidate.Length.ToString()) -and
+      ($selectionCache['LastWriteTimeUtc'] -eq $candidate.LastWriteTimeUtc.ToString('o')) -and
+      ($selectionCache['CacheSchemaVersion'] -eq $CacheSchemaVersion) -and
+      ($selectionCache['ParserVersion'] -eq $ParserVersion)
     try {
       $stream = [System.IO.File]::OpenRead($candidate.File.FullName)
       $stream.Close()
-      if (Test-IsValidBomWorkbook -File $candidate.File) {
+      if ($metadataMatchesCache) {
+        $candidate.WorkbookValid = $true
+        Write-Log "    Fast selection: source metadata and cache versions match."
+      } elseif (Test-IsValidBomWorkbook -File $candidate.File) {
         $candidate.WorkbookValid = $true
       } else {
         $candidate.WorkbookValid = $false
@@ -465,10 +588,6 @@ if ($resolvedWeeklyBomDir -and (Test-Path -LiteralPath $resolvedWeeklyBomDir)) {
       $candidate.ValidationError = "File read/availability failure: $_"
       Write-Log "    Rejected: $($candidate.ValidationError)"
     }
-  }
-
-  $selectedReason = ""
-  foreach ($candidate in $sortedCandidates) {
     if ($candidate.WorkbookValid) {
       $selectedBom = $candidate.File
       $selectedBomName = $candidate.Name
@@ -509,19 +628,25 @@ if ($selectedBom) {
       $cSchema = $c['CacheSchemaVersion']
       $cParser = $c['ParserVersion']
       $cHash = $c['Hash']
+      $cReferencePath = $c['ReferenceFullPath']
+      $cReferenceLength = $c['ReferenceLength']
+      $cReferenceModified = $c['ReferenceLastWriteTimeUtc']
 
       $fastMatch = ($cPath -eq $selectedBom.FullName) -and
                    ($cLength -eq $selectedBomSize.ToString()) -and
                    ($cModified -eq $selectedBomModifiedUtc) -and
                    ($cSchema -eq $CacheSchemaVersion) -and
-                   ($cParser -eq $ParserVersion)
+                   ($cParser -eq $ParserVersion) -and
+                   ($cReferencePath -eq $referenceFullPath) -and
+                   ($cReferenceLength -eq $referenceLength) -and
+                   ($cReferenceModified -eq $referenceModifiedUtc)
 
-      Write-Log "Fast check: path=$(if($cPath -eq $selectedBom.FullName){'match'}else{'MISMATCH'}), size=$(if($cLength -eq $selectedBomSize.ToString()){'match'}else{'MISMATCH'}), modified=$(if($cModified -eq $selectedBomModifiedUtc){'match'}else{'MISMATCH'}), schema=$(if($cSchema -eq $CacheSchemaVersion){'match'}else{'MISMATCH'}), parser=$(if($cParser -eq $ParserVersion){'match'}else{'MISMATCH'})"
+      Write-Log "Fast check: path=$(if($cPath -eq $selectedBom.FullName){'match'}else{'MISMATCH'}), size=$(if($cLength -eq $selectedBomSize.ToString()){'match'}else{'MISMATCH'}), modified=$(if($cModified -eq $selectedBomModifiedUtc){'match'}else{'MISMATCH'}), schema=$(if($cSchema -eq $CacheSchemaVersion){'match'}else{'MISMATCH'}), parser=$(if($cParser -eq $ParserVersion){'match'}else{'MISMATCH'}), level-reference=$(if(($cReferencePath -eq $referenceFullPath) -and ($cReferenceLength -eq $referenceLength) -and ($cReferenceModified -eq $referenceModifiedUtc)){'match'}else{'MISMATCH'})"
 
       if ($fastMatch) {
         # Check all generated outputs exist and are readable
         $outputsOk = $true
-        foreach ($p in @($manifestPath, $preparedDataPath, $stagedWorkbookPath)) {
+        foreach ($p in @($manifestPath, $preparedDataPath, $preparedCsvPath, $stagedWorkbookPath)) {
           if (-not (Test-Path -LiteralPath $p)) { $outputsOk = $false; Write-Log "Missing generated output: $p"; break }
           if ((Get-Item -LiteralPath $p).Length -eq 0) { $outputsOk = $false; Write-Log "Empty generated output: $p"; break }
         }
@@ -540,6 +665,9 @@ if ($selectedBom) {
         elseif ($cModified -ne $selectedBomModifiedUtc) { $rebuildReason = 'source modified time changed' }
         elseif ($cSchema -ne $CacheSchemaVersion) { $rebuildReason = 'cache schema version changed' }
         elseif ($cParser -ne $ParserVersion) { $rebuildReason = 'parser version changed' }
+        elseif ($cReferencePath -ne $referenceFullPath) { $rebuildReason = 'BOM Level reference path changed' }
+        elseif ($cReferenceLength -ne $referenceLength) { $rebuildReason = 'BOM Level reference size changed' }
+        elseif ($cReferenceModified -ne $referenceModifiedUtc) { $rebuildReason = 'BOM Level reference modified time changed' }
         Write-Log "Fast check failed: $rebuildReason"
       }
     } else {
@@ -572,12 +700,125 @@ if ($rebuildNeeded -and $selectedBom) {
     $newHash = (Get-FileHash -LiteralPath $selectedBom.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     Write-Log "SHA-256: $newHash"
 
+    # Load or rebuild the compact historical Level index. In the reference export,
+    # BOMLevel=1 is equivalent to ParentItemId=TopItemId. The minimum level is kept
+    # for each TopItemId + ChildItemId pair to collapse duplicate export versions.
+    $referenceRows = @()
+    if ($referenceInfo) {
+      try {
+        $referenceCacheFresh = $false
+        if (-not $forceRebuild -and
+            (Test-Path -LiteralPath $referenceIndexPath) -and
+            (Test-Path -LiteralPath $referenceStatePath)) {
+          $referenceState = Read-IniFile -FilePath $referenceStatePath
+          if ($referenceState.ContainsKey('ReferenceWorkbook')) {
+            $rs = $referenceState['ReferenceWorkbook']
+            $referenceCacheFresh =
+              ($rs['SourceFullPath'] -eq $referenceFullPath) -and
+              ($rs['SourceLength'] -eq $referenceLength) -and
+              ($rs['LastWriteTimeUtc'] -eq $referenceModifiedUtc) -and
+              ($rs['ReferenceIndexVersion'] -eq $ReferenceIndexVersion) -and
+              ((Get-Item -LiteralPath $referenceIndexPath).Length -gt 0)
+          }
+        }
+
+        if ($referenceCacheFresh) {
+          Write-Log "Loading cached BOM Level reference index..."
+          $referenceRows = @(Import-Csv -LiteralPath $referenceIndexPath)
+        } else {
+          Write-Log "Building BOM Level reference index from '$($referenceInfo.Name)'..."
+          $referenceSheets = @([WvnXlsxReader]::Read($referenceFullPath, '.*', 0))
+          $referencePairByKey = @{}
+
+          foreach ($referenceSheet in $referenceSheets) {
+            $referenceHeader = Get-HeaderInfo $referenceSheet @(
+              @('bomlevel','bom level','level'),
+              @('topitemid','top item id','fg'),
+              @('childitemid','child item id','item number')
+            )
+            if (-not $referenceHeader) { continue }
+
+            $referenceLevelCol = Find-HeaderColumn $referenceHeader @('bomlevel','bom level','level')
+            $referenceTopCol = Find-HeaderColumn $referenceHeader @('topitemid','top item id','fg')
+            $referenceChildCol = Find-HeaderColumn $referenceHeader @('childitemid','child item id','item number')
+
+            for ($rr = $referenceHeader.Row + 1; $rr -lt $referenceSheet.Rows.Count; $rr++) {
+              $referenceRow = $referenceSheet.Rows[$rr]
+              $referenceTop = Normalize-ItemId (Get-RowCell $referenceRow $referenceTopCol)
+              $referenceChild = Normalize-ItemId (Get-RowCell $referenceRow $referenceChildCol)
+              $referenceLevelText = Normalize-BomText (Get-RowCell $referenceRow $referenceLevelCol)
+              $referenceLevelNumber = 0
+              if (-not $referenceTop -or -not $referenceChild -or
+                  -not [int]::TryParse(($referenceLevelText -replace '\.0+$', ''), [ref]$referenceLevelNumber) -or
+                  $referenceLevelNumber -lt 1) {
+                continue
+              }
+
+              $referencePairKey = "$referenceTop::$referenceChild".ToLowerInvariant()
+              if (-not $referencePairByKey.ContainsKey($referencePairKey) -or
+                  $referenceLevelNumber -lt [int]$referencePairByKey[$referencePairKey].bomLevel) {
+                $referencePairByKey[$referencePairKey] = [pscustomobject]@{
+                  topItemId  = $referenceTop
+                  childItemId = $referenceChild
+                  bomLevel   = $referenceLevelNumber
+                }
+              }
+            }
+          }
+
+          $referenceRows = @($referencePairByKey.Values | Sort-Object topItemId, childItemId)
+          if ($referenceRows.Count -eq 0) {
+            throw "The reference workbook contained no recognizable TopItemId + ChildItemId + BOMLevel rows."
+          }
+
+          $referenceCsv = (@($referenceRows | Select-Object topItemId,childItemId,bomLevel | ConvertTo-Csv -NoTypeInformation) -join [Environment]::NewLine)
+          Write-AtomicText -FilePath $referenceIndexPath -TextContent $referenceCsv
+          Write-AtomicIni -FilePath $referenceStatePath -Lines @(
+            '[ReferenceWorkbook]',
+            "SourceFullPath=$referenceFullPath",
+            "SourceLength=$referenceLength",
+            "LastWriteTimeUtc=$referenceModifiedUtc",
+            "ReferenceIndexVersion=$ReferenceIndexVersion",
+            "RecordCount=$($referenceRows.Count)",
+            "GeneratedUtc=$((Get-Date).ToUniversalTime().ToString('o'))"
+          )
+          Write-Log "Cached $($referenceRows.Count) historical BOM pair levels."
+        }
+      } catch {
+        Write-Log "WARNING: BOM Level reference could not be used: $_"
+        $referenceRows = @()
+      }
+    }
+
+    $referenceLevelByPair = @{}
+    $referenceItemStats = @{}
+    foreach ($referenceRow in $referenceRows) {
+      $referenceTop = Normalize-ItemId $referenceRow.topItemId
+      $referenceChild = Normalize-ItemId $referenceRow.childItemId
+      $referenceLevelNumber = [int]$referenceRow.bomLevel
+      if (-not $referenceTop -or -not $referenceChild -or $referenceLevelNumber -lt 1) { continue }
+
+      $referencePairKey = "$referenceTop::$referenceChild".ToLowerInvariant()
+      $referenceLevelByPair[$referencePairKey] = $referenceLevelNumber
+
+      $referenceItemKey = $referenceChild.ToLowerInvariant()
+      if (-not $referenceItemStats.ContainsKey($referenceItemKey)) {
+        $referenceItemStats[$referenceItemKey] = [pscustomobject]@{ HasLevel1=$false; HasDeeper=$false }
+      }
+      if ($referenceLevelNumber -eq 1) {
+        $referenceItemStats[$referenceItemKey].HasLevel1 = $true
+      } else {
+        $referenceItemStats[$referenceItemKey].HasDeeper = $true
+      }
+    }
+    Write-Log "Level filter index ready: $($referenceLevelByPair.Count) exact pairs; $($referenceItemStats.Count) component profiles."
+
     # Parse BOM workbook
     Write-Log "Parsing BOM workbook (parser v$ParserVersion)..."
     $sheets = @([WvnXlsxReader]::Read($selectedBom.FullName, '.*', 0))
 
-    $allRows = [System.Collections.ArrayList]::new()
-    $seenKeys = @{}
+    $rowByKey = @{}
+    $qualityByKey = @{}
 
     foreach ($sheet in $sheets) {
       Write-Log "  Scanning sheet '$($sheet.Name)' ($($sheet.Rows.Count) rows)..."
@@ -600,39 +841,92 @@ if ($rebuildNeeded -and $selectedBom) {
 
         $fg = Normalize-ItemId (Get-RowCell $row $fgCol)
         $itemNumber = Normalize-ItemId (Get-RowCell $row $itemCol)
-        $productName = Get-RowCell $row $productCol
+        $productName = Normalize-BomText (Get-RowCell $row $productCol)
         if (-not $fg -or -not $itemNumber -or -not $productName) { continue }
 
-        # Level 1 filter
+        $type = if ($typeCol -ge 0) { Normalize-BomText (Get-RowCell $row $typeCol) } else { '' }
+
+        # Reconstruct Level 1. Prefer an explicit weekly level, then the exact
+        # historical FG/component pair, then a component that has only ever
+        # appeared at Level 1. New unknown items are retained only when their
+        # name/type is relevant to an image requirement and are marked Review.
+        $level1Method = ''
+        $level1Confidence = ''
+        $categoryKey = ''
+        $mappedAssetKeys = ''
         if ($levelCol -ge 0) {
-          $levelVal = Get-RowCell $row $levelCol
-          if ($levelVal -and $levelVal -ne '1') { continue }
+          $levelVal = Normalize-BomText (Get-RowCell $row $levelCol)
+          if ($levelVal -notmatch '^1(?:\.0+)?$') { continue }
+          $level1Method = 'source-level'
+          $level1Confidence = 'High'
+        } else {
+          $pairKey = "$fg::$itemNumber".ToLowerInvariant()
+          $itemKey = $itemNumber.ToLowerInvariant()
+          if ($referenceLevelByPair.ContainsKey($pairKey)) {
+            if ([int]$referenceLevelByPair[$pairKey] -ne 1) { continue }
+            $level1Method = 'reference-pair'
+            $level1Confidence = 'High'
+          } elseif ($referenceItemStats.ContainsKey($itemKey) -and
+                    $referenceItemStats[$itemKey].HasLevel1 -and
+                    -not $referenceItemStats[$itemKey].HasDeeper) {
+            $level1Method = 'reference-item-profile'
+            $level1Confidence = 'Medium'
+          } else {
+            $categoryKey = Get-BomUiCategory -ProductName $productName -Type $type
+            $mappedAssetKeys = Get-BomMappedAssetKeys -ProductName $productName -Type $type
+            if ($mappedAssetKeys -or $categoryKey -ne 'packaging') {
+              $level1Method = 'new-image-relevant'
+              $level1Confidence = 'Review'
+            } else {
+              continue
+            }
+          }
         }
 
-        $fgName = if ($fgNameCol -ge 0) { Get-RowCell $row $fgNameCol } else { '' }
-        $type = if ($typeCol -ge 0) { Get-RowCell $row $typeCol } else { '' }
-        $vendor = if ($vendorCol -ge 0) { Get-RowCell $row $vendorCol } else { '' }
-        $norm = if ($normCol -ge 0) { Get-RowCell $row $normCol } else { '' }
-        $buyerGroup = if ($buyerCol -ge 0) { Get-RowCell $row $buyerCol } else { '' }
+        $fgName = if ($fgNameCol -ge 0) { Normalize-BomText (Get-RowCell $row $fgNameCol) } else { '' }
+        $vendor = if ($vendorCol -ge 0) { Normalize-BomText (Get-RowCell $row $vendorCol) } else { '' }
+        $norm = if ($normCol -ge 0) { Normalize-BomText (Get-RowCell $row $normCol) } else { '' }
+        $buyerGroup = if ($buyerCol -ge 0) { Normalize-BomText (Get-RowCell $row $buyerCol) } else { '' }
+        if (-not $categoryKey) { $categoryKey = Get-BomUiCategory -ProductName $productName -Type $type }
+        if (-not $mappedAssetKeys) { $mappedAssetKeys = Get-BomMappedAssetKeys -ProductName $productName -Type $type }
 
-        # Deduplicate: fg::itemNumber::productName, keep row with more populated fields
-        $key = "$fg::$itemNumber::$productName".ToLowerInvariant()
+        # One clean Level-1 component record per FG + ChildItemId.
+        $key = "$fg::$itemNumber".ToLowerInvariant()
         $quality = [int]($fgName -ne '') + [int]($type -ne '') + [int]($vendor -ne '') + [int]($norm -ne '') + [int]($buyerGroup -ne '')
-
-        if ($seenKeys.ContainsKey($key)) {
-          if ($quality -gt $seenKeys[$key].Quality) {
-            $seenKeys[$key] = @{ Quality=$quality; Index=$allRows.Count }
-            [void]$allRows.Add(@{ fg=$fg; fgName=$fgName; itemNumber=$itemNumber; productName=$productName; type=$type; vendor=$vendor; norm=$norm; buyerGroup=$buyerGroup })
+        if (-not $rowByKey.ContainsKey($key) -or $quality -gt $qualityByKey[$key]) {
+          $qualityByKey[$key] = $quality
+          $rowByKey[$key] = [pscustomobject]@{
+            fg              = $fg
+            fgName          = $fgName
+            itemNumber      = $itemNumber
+            productName     = $productName
+            type            = $type
+            vendor          = $vendor
+            norm            = $norm
+            buyerGroup      = $buyerGroup
+            bomLevel        = '1'
+            categoryKey     = $categoryKey
+            category        = Get-BomUiCategoryLabel -CategoryKey $categoryKey
+            mappedAssetKeys = $mappedAssetKeys
+            level1Method    = $level1Method
+            level1Confidence = $level1Confidence
           }
-        } else {
-          $seenKeys[$key] = @{ Quality=$quality; Index=$allRows.Count }
-          [void]$allRows.Add(@{ fg=$fg; fgName=$fgName; itemNumber=$itemNumber; productName=$productName; type=$type; vendor=$vendor; norm=$norm; buyerGroup=$buyerGroup })
         }
       }
     }
 
+    $allRows = @($rowByKey.Values | Sort-Object fg, itemNumber)
     $totalRecords = $allRows.Count
     Write-Log "Parsed $totalRecords deduplicated BOM rows from $($sheets.Count) sheets."
+    $level1MethodCounts = @{}
+    $level1ConfidenceCounts = @{}
+    foreach ($preparedRow in $allRows) {
+      if (-not $level1MethodCounts.ContainsKey($preparedRow.level1Method)) { $level1MethodCounts[$preparedRow.level1Method] = 0 }
+      if (-not $level1ConfidenceCounts.ContainsKey($preparedRow.level1Confidence)) { $level1ConfidenceCounts[$preparedRow.level1Confidence] = 0 }
+      $level1MethodCounts[$preparedRow.level1Method]++
+      $level1ConfidenceCounts[$preparedRow.level1Confidence]++
+    }
+    Write-Log "Level-1 methods: $((@($level1MethodCounts.GetEnumerator() | Sort-Object Name | ForEach-Object { '{0}={1}' -f $_.Name,$_.Value })) -join ', ')"
 
     # Build prepared data JSON
     $dataObj = [pscustomobject]@{
@@ -645,6 +939,14 @@ if ($rebuildNeeded -and $selectedBom) {
       generatedUtc  = (Get-Date).ToUniversalTime().ToString('o')
       cacheStatus   = 'rebuilt'
       recordCount   = $totalRecords
+      levelReference = [pscustomobject]@{
+        available   = [bool]($referenceLevelByPair.Count -gt 0)
+        sourcePath  = $referenceFullPath
+        sourceModifiedUtc = $referenceModifiedUtc
+        indexedPairCount = $referenceLevelByPair.Count
+      }
+      level1MethodCounts = $level1MethodCounts
+      level1ConfidenceCounts = $level1ConfidenceCounts
       rows          = @($allRows)
     }
     $newDataJson = ConvertTo-Json -Compress -Depth 4 -InputObject $dataObj
@@ -661,8 +963,17 @@ if ($rebuildNeeded -and $selectedBom) {
         hash           = $newHash
       }
       preparedDataPath = 'system/generated/inspection_bom_data.json'
+      preparedCsvPath  = 'system/generated/inspection_bom_level1.csv'
       stagedWorkbookPath = 'system/generated/inspection_bom_source.xlsx'
       recordCount      = $totalRecords
+      levelReference   = [pscustomobject]@{
+        available      = [bool]($referenceLevelByPair.Count -gt 0)
+        sourcePath     = $referenceFullPath
+        modifiedUtc    = $referenceModifiedUtc
+        indexedPairCount = $referenceLevelByPair.Count
+      }
+      level1MethodCounts = $level1MethodCounts
+      level1ConfidenceCounts = $level1ConfidenceCounts
     }
     $newManifestJson = ConvertTo-Json -Compress -Depth 4 -InputObject $manifestObj
 
@@ -670,6 +981,17 @@ if ($rebuildNeeded -and $selectedBom) {
     Write-Log "Writing prepared data JSON ($totalRecords records)..."
     Write-AtomicJson -FilePath $preparedDataPath -JsonContent $newDataJson
     Write-Log "Prepared data written: $preparedDataPath"
+
+    # Write cleaned categorized Level-1 CSV (atomic, UTF-8 without BOM)
+    Write-Log "Writing cleaned Level-1 BOM CSV ($totalRecords records)..."
+    $csvColumns = @(
+      'fg','fgName','itemNumber','productName','type','vendor','norm',
+      'buyerGroup','bomLevel','categoryKey','category','mappedAssetKeys',
+      'level1Method','level1Confidence'
+    )
+    $csvText = (@($allRows | Select-Object $csvColumns | ConvertTo-Csv -NoTypeInformation) -join [Environment]::NewLine)
+    Write-AtomicText -FilePath $preparedCsvPath -TextContent $csvText
+    Write-Log "Prepared CSV written: $preparedCsvPath"
 
     # Stage workbook (atomic via temp copy)
     $tmpWorkbookPath = "$stagedWorkbookPath.tmp"
@@ -700,10 +1022,14 @@ if ($rebuildNeeded -and $selectedBom) {
       "Hash=$newHash",
       "CacheSchemaVersion=$CacheSchemaVersion",
       "ParserVersion=$ParserVersion",
+      "ReferenceFullPath=$referenceFullPath",
+      "ReferenceLength=$referenceLength",
+      "ReferenceLastWriteTimeUtc=$referenceModifiedUtc",
       "",
       "[GeneratedOutput]",
       "ManifestPath=$manifestPath",
       "PreparedDataPath=$preparedDataPath",
+      "PreparedCsvPath=$preparedCsvPath",
       "StagedWorkbookPath=$stagedWorkbookPath",
       "GeneratedUtc=$((Get-Date).ToUniversalTime().ToString('o'))"
     )
@@ -721,12 +1047,12 @@ if ($rebuildNeeded -and $selectedBom) {
     $rebuildFailed = $true
 
     # Clean up temp files
-    @("$preparedDataPath.tmp", "$manifestPath.tmp", "$stagedWorkbookPath.tmp") | ForEach-Object {
+    @("$preparedDataPath.tmp", "$preparedCsvPath.tmp", "$manifestPath.tmp", "$stagedWorkbookPath.tmp") | ForEach-Object {
       if (Test-Path -LiteralPath $_) { Remove-Item -LiteralPath $_ -Force -ErrorAction SilentlyContinue }
     }
 
     # Fall back to previous cache if available
-    if ((Test-Path -LiteralPath $preparedDataPath) -and (Test-Path -LiteralPath $manifestPath) -and (Test-Path -LiteralPath $stagedWorkbookPath)) {
+    if ((Test-Path -LiteralPath $preparedDataPath) -and (Test-Path -LiteralPath $preparedCsvPath) -and (Test-Path -LiteralPath $manifestPath) -and (Test-Path -LiteralPath $stagedWorkbookPath)) {
       Write-Log "Previous cache preserved. Using stale fallback."
       $cacheStatus = 'stale'
       try {
@@ -745,8 +1071,12 @@ if ($rebuildNeeded -and $selectedBom) {
 
   # Release memory
   $allRows = $null
-  $seenKeys = $null
+  $rowByKey = $null
+  $qualityByKey = $null
   $sheets = $null
+  $referenceRows = $null
+  $referenceLevelByPair = $null
+  $referenceItemStats = $null
   [System.GC]::Collect()
 
 } elseif ($rebuildNeeded -and -not $selectedBom) {
@@ -918,6 +1248,7 @@ Write-Log "  Cache status: $cacheStatus"
 if ($rebuildReason) { Write-Log "  Rebuild reason: $rebuildReason" }
 Write-Log "  Manifest path: $manifestPath"
 Write-Log "  Prepared data: $preparedDataPath"
+Write-Log "  Prepared CSV: $preparedCsvPath"
 Write-Log "  Staged workbook: $stagedWorkbookPath"
 Write-Log "  Picture library available: $pictureLibraryAvailable"
 Write-Log "  Picture records: $($pictureRecords.Count)"

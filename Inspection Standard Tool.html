@@ -933,10 +933,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       }
 
       var INSPECTION_CATEGORY_CONFIG = {
-        manuals: { label: "Contents inside colorbox", bomLabel: "BOM requirements" },
-        packaging: { label: "Product and marking", bomLabel: "Product requirements" },
-        labels: { label: "Retail colorbox", bomLabel: "Colorbox requirements" },
-        components: { label: "Master carton", bomLabel: "Master-carton requirements" }
+        manuals: { label: "Accessory", bomLabel: "Accessory requirements" },
+        packaging: { label: "Product and marking", bomLabel: "Product and marking requirements" },
+        labels: { label: "Colorbox", bomLabel: "Colorbox requirements" },
+        components: { label: "Master carton", bomLabel: "Master carton requirements" }
       };
       var INSPECTION_BOM_LINKED_KEYS = new Set([
         "ib", "safety", "acessory_bag", "accessory_1", "accessory_2",
@@ -2658,11 +2658,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           onDragOver: event => {
             event.preventDefault();
             event.dataTransfer.dropEffect = "move";
-            if (!linkedFront && !isActive) onDragEnter(assetKey);
+            if (!isActive) onDragEnter(assetKey);
           },
           onDragEnter: event => {
             event.preventDefault();
-            if (!linkedFront && !isActive) onDragEnter(assetKey);
+            if (!isActive) onDragEnter(assetKey);
           },
           onDragLeave: event => {
             if (
@@ -2674,7 +2674,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           },
           onDrop: event => {
             event.preventDefault();
-            if (!linkedFront) onDrop(event, assetKey);
+            onDrop(event, assetKey);
           },
           children: assignedImage
             ? mt.jsxs("div", {
@@ -2773,7 +2773,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
                   mt.jsx("span", {
                     className: "asset-target__hint",
                     children: linkedFront
-                      ? "Assign FG Colorbox Front"
+                      ? "Drop here - shared with FG Colorbox Front"
                       : copy.dropHere
                   })
                 ]
@@ -2880,87 +2880,34 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
       function inspectionBomRequirements({
         sectionKey,
-        slots,
-        assignments,
-        collapsed,
-        onToggle
+        slots
       }) {
         const category = INSPECTION_CATEGORY_CONFIG[sectionKey] ||
           INSPECTION_CATEGORY_CONFIG.manuals;
         return mt.jsxs("aside", {
-          className:
-            `inspection-bom-requirements ${
-              collapsed ? "inspection-bom-requirements--collapsed" : ""
-            }`,
+          className: "inspection-bom-requirements",
           "data-local-bom-requirements": sectionKey,
           "aria-label": category.bomLabel,
           children: [
-            mt.jsxs("div", {
+            mt.jsx("div", {
               className: "inspection-bom-requirements__header",
-              children: [
-                mt.jsxs("span", {
-                  children: [
-                    mt.jsx("strong", { children: category.bomLabel }),
-                    mt.jsx("small", {
-                      children: `${slots.length} mapped slots`
-                    })
-                  ]
-                }),
-                mt.jsx("button", {
-                  type: "button",
-                  className: "inspection-icon-button",
-                  "aria-expanded": !collapsed,
-                  "aria-controls": `inspection-bom-${sectionKey}`,
-                  "aria-label": `${collapsed ? "Expand" : "Collapse"} ${
-                    category.bomLabel
-                  }`,
-                  onClick: onToggle,
-                  children: collapsed ? "+" : "\u2212"
-                })
-              ]
+              children: mt.jsxs("span", {
+                children: [
+                  mt.jsx("strong", { children: category.bomLabel }),
+                  mt.jsx("small", {
+                    "data-confirmed-bom-count": true,
+                    children: "0 Level-1 items"
+                  })
+                ]
+              })
             }),
-            !collapsed && mt.jsx("div", {
+            mt.jsx("div", {
               id: `inspection-bom-${sectionKey}`,
               className: "inspection-bom-requirements__list",
-              children: slots.map(slot => {
-                const definition = inspectionFieldDefinition(slot);
-                const status = inspectionSlotStatus(slot, assignments);
-                return mt.jsxs("button", {
-                  type: "button",
-                  className:
-                    `inspection-bom-requirement inspection-bom-requirement--${
-                      status === "filled"
-                        ? "assigned"
-                        : definition.bomMode === "manual"
-                          ? "manual-only"
-                          : status
-                    }`,
-                  "data-workbook-key": definition.workbookKey,
-                  onClick: () => inspectionHighlightWorkbookKey(
-                    definition.workbookKey,
-                    true
-                  ),
-                  children: [
-                    mt.jsxs("span", {
-                      className: "inspection-bom-requirement__copy",
-                      children: [
-                        mt.jsx("strong", {
-                          children: definition.displayName
-                        }),
-                        mt.jsx("small", {
-                          children:
-                            `${definition.category} \u00b7 ${definition.workbookKey}`
-                        })
-                      ]
-                    }),
-                    mt.jsx("span", {
-                      className: "inspection-bom-requirement__status",
-                      children: definition.bomMode === "manual"
-                        ? "manual"
-                        : status
-                    })
-                  ]
-                }, definition.workbookKey);
+              "data-confirmed-bom-list": true,
+              children: mt.jsx("p", {
+                className: "bom-items-empty",
+                children: "Enter an FG ID to load confirmed BOM items."
               })
             })
           ]
@@ -3165,14 +3112,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             }),
             !collapsed && mt.jsxs("div", {
               id: `inspection-section-body-${sectionKey}`,
-              className: "section-layout",
+              className:
+                "section-layout",
               children: [
                 inspectionBomRequirements({
                   sectionKey,
                   slots,
-                  assignments,
-                  collapsed: bomCollapsed,
-                  onToggle: onToggleBom
+                  assignments
                 }),
                 viewMode === "table"
                   ? mt.jsx("div", {
@@ -3227,11 +3173,6 @@ https://github.com/nodeca/pako/blob/main/LICENSE
                       }, slot.id))
                     })
               ]
-            }),
-            sectionKey === "components" && mt.jsx("div", {
-              id: "master-carton-library-inline-host",
-              className: "master-carton-library-inline-host",
-              "aria-live": "polite"
             })
           ]
         });
@@ -3239,14 +3180,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
       y8 = function inspectionDraggableAssetThumb({
         image,
-        onDuplicate,
-        onAssign,
-        targetOptions
+        onDuplicate
       }) {
         const [dragging, setDragging] = Et.useState(false);
         const name = image.file.name || "Pasted image";
-        const metadata = inspectionImageMetadata({ image, compact: true });
-        return mt.jsxs("div", {
+        return mt.jsxs("article", {
           className:
             `image-thumb ${dragging ? "image-thumb--dragging" : ""}`,
           draggable: true,
@@ -3279,50 +3217,31 @@ https://github.com/nodeca/pako/blob/main/LICENSE
               children: mt.jsx("img", {
                 src: image.previewUrl,
                 alt: name,
-                draggable: false,
-                onLoad: metadata.onLoad
+                draggable: false
               })
             }),
-            mt.jsx("span", {
-              className: "image-thumb__name",
-              title: name,
-              children: name
-            }),
-            mt.jsx("span", {
-              className: "image-thumb__meta",
-              children: metadata.label
-            }),
             mt.jsxs("div", {
-              className: "image-thumb__quick",
+              className: "image-thumb__meta",
               children: [
-                mt.jsx("select", {
-                  value: "",
-                  "aria-label": `Assign ${name} without dragging`,
-                  onChange: event => {
-                    if (event.currentTarget.value) {
-                      onAssign(event.currentTarget.value, image.id);
-                    }
-                  },
-                  children: [
-                    mt.jsx("option", {
-                      value: "",
-                      children: "Assign to..."
-                    }),
-                    ...targetOptions.map(option => mt.jsx("option", {
-                      value: option.value,
-                      children: option.label
-                    }, option.value))
-                  ]
+                mt.jsx("span", {
+                  className: "image-thumb__name",
+                  title: name,
+                  children: name
+                }),
+                mt.jsx("span", {
+                  className: "image-thumb__source",
+                  children: "Uploaded"
                 }),
                 mt.jsx("button", {
                   type: "button",
-                  "aria-label": `Duplicate ${name}`,
-                  title: "Duplicate",
+                  className: "image-thumb__duplicate",
+                  onPointerDown: event => event.stopPropagation(),
                   onClick: event => {
+                    event.preventDefault();
                     event.stopPropagation();
-                    onDuplicate(image.id);
+                    onDuplicate?.(image.id);
                   },
-                  children: "\u29c9"
+                  children: "Duplicate"
                 })
               ]
             })
@@ -3824,6 +3743,23 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           () => new Map(images.map(image => [image.id, image])),
           [images]
         );
+        Et.useEffect(() => {
+          const registry =
+            window.__inspectionCombinedAssetRegistry ||
+            (window.__inspectionCombinedAssetRegistry = new Map());
+          for (const [assetId, asset] of registry) {
+            if (asset.sourceType === "uploaded") registry.delete(assetId);
+          }
+          images.forEach(image => {
+            registry.set(image.id, {
+              id: image.id,
+              filename: image.file.name || "Pasted image",
+              sourceType: "uploaded",
+              previewUrl: image.previewUrl,
+              image
+            });
+          });
+        }, [images]);
         const assignedImageIds = Et.useMemo(
           () => new Set(Object.values(assignments).filter(Boolean)),
           [assignments]
@@ -3848,7 +3784,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         );
 
         Et.useEffect(() => {
-          const update = () => setBomVersion(version => version + 1);
+          const update = () => {
+            setBomVersion(version => version + 1);
+            window.setTimeout(
+              () => window.__inspectionRefreshConfirmedBom?.(),
+              0
+            );
+          };
           window.addEventListener("inspection-bom-updated", update);
           return () => window.removeEventListener(
             "inspection-bom-updated",
@@ -3898,59 +3840,68 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           setCropImageId(null);
           setCropSlotId(null);
         };
+        const assignAssetToSlot = async ({
+          assetId,
+          slotId,
+          inputId = null
+        }) => {
+          const assetKey = inputId || slotId;
+          const registry = window.__inspectionCombinedAssetRegistry;
+          const asset = registry?.get(assetId);
+          if (!asset) return false;
+          if (asset.sourceType === "uploaded") {
+            onAssign(assetKey, assetId);
+            return true;
+          }
+          if (asset.sourceType !== "master-carton-library") return false;
+          const cartonTargets = new Set([
+            "mastercarton_front", "mastercarton_back",
+            "mastercarton_left", "mastercarton_right",
+            "mastercarton_top", "mastercarton_bottom",
+            "colorboxes_packed_mastercarton"
+          ]);
+          if (!cartonTargets.has(assetKey) || !asset.relativePath) return false;
+          const response = await fetch(
+            encodeURI(asset.relativePath),
+            { cache: "no-store" }
+          );
+          if (!response.ok) return false;
+          const blob = await response.blob();
+          const record = asset.record || asset;
+          const file = new File([blob], asset.filename, {
+            type: blob.type ||
+              `image/${
+                record.extension === "jpg"
+                  ? "jpeg"
+                  : record.extension || "png"
+              }`,
+            lastModified: Date.parse(record.modifiedUtc) || Date.now()
+          });
+          await onFilesAddedToAsset(assetKey, [file]);
+          window.dispatchEvent(new CustomEvent(
+            "inspection-master-carton-assigned",
+            { detail: { record, assetKey } }
+          ));
+          return true;
+        };
+        window.assignAssetToSlot = assignAssetToSlot;
+
         const dropOnTarget = async (event, assetKey) => {
           event.preventDefault();
           setActiveAssetKey(null);
-          const source = event.dataTransfer.getData(
-            INSPECTION_ASSET_SOURCE_TYPE
-          );
-          if (source === "master-carton-library") {
-            const cartonTargets = new Set([
-              "mastercarton_front", "mastercarton_back",
-              "mastercarton_left", "mastercarton_right",
-              "mastercarton_top", "mastercarton_bottom",
-              "colorboxes_packed_mastercarton"
-            ]);
-            if (!cartonTargets.has(assetKey)) return;
-            let record = window.__inspectionMasterCartonDragRecord;
-            try {
-              const serialized = event.dataTransfer.getData(
-                INSPECTION_CARTON_RECORD_TYPE
-              );
-              if (serialized) record = JSON.parse(serialized);
-            } catch {}
-            window.__inspectionMasterCartonDragRecord = null;
-            if (!record?.relativePath) return;
-            const response = await fetch(
-              encodeURI(record.relativePath),
-              { cache: "no-store" }
-            );
-            if (!response.ok) return;
-            const blob = await response.blob();
-            const file = new File([blob], record.filename, {
-              type: blob.type ||
-                `image/${
-                  record.extension === "jpg"
-                    ? "jpeg"
-                    : record.extension || "png"
-                }`,
-              lastModified: Date.parse(record.modifiedUtc) || Date.now()
-            });
-            await onFilesAddedToAsset(assetKey, [file]);
-            window.dispatchEvent(new CustomEvent(
-              "inspection-master-carton-assigned",
-              { detail: { record, assetKey } }
-            ));
-            return;
-          }
-          const imageId =
+          const assetId =
             event.dataTransfer.getData(INSPECTION_ASSET_DRAG_TYPE) ||
             event.dataTransfer.getData(Iy) ||
             event.dataTransfer.getData("text/plain") ||
             window.__inspectionDragImageId;
           window.__inspectionDragImageId = null;
-          if (imageId) {
-            onAssign(assetKey, imageId);
+          if (assetId) {
+            await assignAssetToSlot({
+              assetId,
+              slotId:
+                inspectionDefinitionForAssetKey(assetKey)?.id || assetKey,
+              inputId: assetKey
+            });
             return;
           }
           const files = Array.from(event.dataTransfer.files);
@@ -4097,10 +4048,19 @@ https://github.com/nodeca/pako/blob/main/LICENSE
                             }),
                             mt.jsx("span", {
                               className: "asset-pool__count",
-                              children:
-                                `${filteredAssets.length} image${
-                                  filteredAssets.length === 1 ? "" : "s"
-                                }`
+                              children: [
+                                mt.jsx("span", {
+                                  id: "asset-pool-uploaded-count",
+                                  children:
+                                    `${filteredAssets.length} image${
+                                      filteredAssets.length === 1 ? "" : "s"
+                                    }`
+                                }),
+                                mt.jsx("span", {
+                                  id: "asset-pool-carton-count",
+                                  children: ""
+                                })
+                              ]
                             })
                           ]
                         }),
@@ -4119,22 +4079,40 @@ https://github.com/nodeca/pako/blob/main/LICENSE
                       className: "asset-pool__helper",
                       children: "Drag an image into a placeholder."
                     }),
-                    filteredAssets.length
-                      ? mt.jsx("div", {
-                          className: "asset-pool__grid",
-                          children: filteredAssets.map(image => mt.jsx(y8, {
-                            image,
-                            onDuplicate: onDuplicateImage,
-                            onAssign,
-                            targetOptions
-                          }, image.id))
+                    mt.jsxs("div", {
+                      className: "asset-pool__grid",
+                      children: [
+                        mt.jsxs("section", {
+                          className: "asset-pool__group",
+                          children: [
+                            mt.jsx("h4", {
+                              className: "asset-pool__group-title",
+                              children: "Uploaded Images"
+                            }),
+                            filteredAssets.length
+                              ? mt.jsx("div", {
+                                  className: "asset-pool__items",
+                                  children: filteredAssets.map(image =>
+                                    mt.jsx(y8, {
+                                      image,
+                                      onDuplicate: onDuplicateImage
+                                    }, image.id)
+                                  )
+                                })
+                              : mt.jsx("div", {
+                                  className: "asset-pool__empty",
+                                  children:
+                                    "No unassigned uploaded images."
+                                })
+                          ]
+                        }),
+                        mt.jsx("div", {
+                          id: "master-carton-library-inline-host",
+                          className: "master-carton-library-inline-host",
+                          "aria-live": "polite"
                         })
-                      : mt.jsx("div", {
-                          className: "asset-pool__empty",
-                          children:
-                            "No unassigned images. Upload images or remove " +
-                            "an assignment to return it here."
-                        })
+                      ]
+                    })
                   ]
                 })
               ]
@@ -4168,7 +4146,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         .image-thumb img { object-fit: contain !important; }
         .workspace__layout {
           display: grid;
-          grid-template-columns: minmax(0, 1fr) 300px !important;
+          grid-template-columns: minmax(0, 1fr) 310px !important;
           gap: 12px;
           align-items: start;
           overflow: visible;
@@ -4176,26 +4154,30 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         .slot-card { min-height: 0 !important; }
         .asset-pool {
           position: sticky !important;
-          top: 12px;
+          top: 10px;
+          height: calc(100vh - 20px);
+          max-height: calc(100vh - 20px);
+          min-height: 420px;
           display: flex;
-          max-height: calc(100vh - 24px);
-          min-height: 230px;
           flex-direction: column;
           align-self: start;
           overflow: hidden;
           border: 1px solid var(--border);
-          border-radius: 9px;
+          border-radius: 12px;
           background: var(--surface);
         }
         .asset-pool__grid {
+          flex: 1 1 auto;
+          min-height: 0;
+          overflow-y: auto;
+          overflow-x: hidden;
+          max-height: none !important;
           display: grid;
           grid-template-columns: 1fr;
-          gap: 8px;
-          min-height: 0;
-          max-height: none;
-          flex: 1 1 auto;
-          overflow-y: auto;
-          padding: 8px;
+          grid-auto-rows: max-content;
+          align-content: start;
+          gap: 7px;
+          padding: 7px;
         }
         .asset-pool__header {
           display: flex;
@@ -4223,12 +4205,36 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           white-space: nowrap;
         }
         .asset-pool__helper {
+          flex: 0 0 auto;
           margin: 0;
           border-bottom: 1px solid var(--border);
           background: var(--surface-muted);
           color: var(--text-muted);
           font-size: 10px;
           padding: 7px 10px;
+        }
+        .asset-pool__header { flex: 0 0 auto; }
+        .asset-pool__group,
+        .master-carton-library-inline-host {
+          display: grid;
+          grid-auto-rows: max-content;
+          gap: 7px;
+          min-width: 0;
+        }
+        .asset-pool__group-title {
+          margin: 0;
+          padding: 5px 2px 2px;
+          color: var(--text);
+          font-size: 11px;
+          font-weight: 800;
+        }
+        .asset-pool__items {
+          display: grid;
+          grid-template-columns: 1fr;
+          grid-auto-rows: max-content;
+          align-content: start;
+          gap: 7px;
+          min-width: 0;
         }
         .app {
           width: min(100%, 1540px);
@@ -4245,6 +4251,14 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           overflow: visible;
           transform: none;
           contain: none;
+        }
+        .workspace,
+        .workspace__layout,
+        .workspace__slots {
+          overflow: visible !important;
+          transform: none !important;
+          filter: none !important;
+          contain: none !important;
         }
         .workspace__header {
           display: grid;
@@ -4463,6 +4477,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           gap: 10px;
           padding: 8px;
         }
+        .section-layout--slots-only { grid-template-columns: minmax(0, 1fr); }
         .slot-grid {
           display: grid;
           grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
@@ -4742,6 +4757,42 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           max-height: calc(100vh - 160px);
           padding: 5px;
         }
+        .bom-item-row {
+          display: flex;
+          align-items: flex-start;
+          gap: 8px;
+          padding: 6px 7px;
+          border: 1px solid var(--border);
+          border-radius: 7px;
+          background: var(--surface-muted);
+          cursor: pointer;
+        }
+        .bom-item-row input {
+          flex: 0 0 auto;
+          margin: 2px 0 0;
+        }
+        .bom-item-row__content {
+          min-width: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+        .bom-item-row__id {
+          font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+          font-size: 12px;
+        }
+        .bom-item-row__name {
+          color: var(--text-muted);
+          font-size: 11px;
+          line-height: 1.3;
+        }
+        .bom-items-empty {
+          margin: 0;
+          color: var(--text-muted);
+          font-size: 11px;
+          line-height: 1.4;
+          padding: 7px;
+        }
         .inspection-bom-requirement { padding: 5px 6px; }
         .inspection-bom-requirement__copy strong { font-size: 9px; }
         .inspection-bom-requirement__copy small { font-size: 8px; }
@@ -4886,7 +4937,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           cursor: pointer;
         }
         .image-thumb {
+          flex: 0 0 auto;
           min-width: 0;
+          min-height: 0;
           overflow: hidden;
           border-radius: 7px;
           cursor: grab;
@@ -4912,21 +4965,37 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         }
         .image-thumb__select input { margin: 0; }
         .image-thumb__preview {
-          height: 130px;
+          flex: 0 0 132px;
+          height: 132px;
+          min-height: 132px;
+          max-height: 132px;
           border: 1px solid var(--border);
           border-radius: 5px;
-          cursor: pointer;
+          cursor: grab;
         }
         .image-thumb__name {
-          padding: 5px 2px 1px;
+          display: block;
+          overflow: hidden;
+          padding: 0;
           color: var(--text-body);
-          font-size: 9px;
+          font-size: 11px;
+          text-overflow: ellipsis;
+          white-space: nowrap;
         }
         .image-thumb__meta {
           display: block;
-          min-height: 14px;
-          color: var(--text-faint);
-          font-size: 8px;
+          padding: 5px 7px 7px;
+        }
+        .image-thumb__source {
+          display: inline-flex;
+          margin-top: 4px;
+          max-width: 100%;
+          padding: 2px 6px;
+          border-radius: 999px;
+          background: var(--surface-soft);
+          color: var(--text-muted);
+          font-size: 10px;
+          font-weight: 700;
         }
         .image-thumb__quick {
           display: grid;
@@ -5078,12 +5147,21 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           }
           .asset-pool {
             position: static !important;
-            max-height: none;
+            width: 100%;
+            height: auto;
+            max-height: 520px;
             min-height: 0;
           }
           .asset-pool__grid {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            overflow: visible;
+            max-height: 420px;
+            grid-template-columns: 1fr;
+            overflow-y: auto;
+          }
+          .image-thumb__preview {
+            flex-basis: 120px;
+            height: 120px;
+            min-height: 120px;
+            max-height: 120px;
           }
         }
         @media (max-width: 720px) {
@@ -5225,11 +5303,11 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
           { keys: ["safety"], test: /safety\s*(instruction\s*)?sheet|instruction\s*sheet|warnings?\s*&?\s*dangers?|warning\s*sheet/i },
           { keys: ["acessory_bag"], test: /accessor(y|ies)\s*(bag|pouch|case)|storage\s*case|soft\s*case|pouch/i },
           { keys: ["accessory_1", "accessory_2", "accessory_3"], test: /combs?|guards?|heads?|attachments?|guides?|cleaning\s*brush/i, exclude: /screws?|blade\s*(top|bottom)|raw\s*material/i },
-          { keys: ["trimmer_hdpe"], test: /(pe|hdpe|inner|internal)\s*bag/i },
-          { keys: ["fg_colorbox_front"], test: /graphic\s*card\s*front|box\s*front|color\s*box\s*front|printed\s*color\s*box|front.{0,30}graphic/i },
+          { keys: ["trimmer_hdpe"], test: /(?:pe|hdpe|pe[-\s]?hd|inner|internal).{0,20}\bbag\b|\bbag\b.{0,20}(?:pe|hdpe|pe[-\s]?hd|inner|internal)/i },
+          { keys: ["fg_colorbox_front"], test: /graphic\s*card|box\s*front|color\s*box|colorbox|printed\s*color\s*box|primary\s*packaging|retail\s*packaging|front.{0,30}graphic/i },
           { keys: ["colorbox_front", "colorbox_back", "colorbox_left", "colorbox_right", "colorbox_top", "colorbox_bottom"], test: /graphic\s*card|printed\s*graphic\s*card|printed\s*color\s*box|color\s*box|colorbox|primary\s*packaging|retail\s*packaging|packaging\s*sleeve|mailer\s*box|box\s*(front|back|left|right|top|bottom)|card\s*(front|back|left|right|top|bottom)/i },
           { keys: ["mastercaton_label"], test: /(master\s*carton|mastercarton|carton|shipper|hsc).{0,40}labels?|labels?.{0,40}(master\s*carton|mastercarton|carton|shipper|hsc)/i },
-          { keys: ["lable_1"], test: /retail\s*label|labels?|sticker|rating|compliance|nameplate|upc|ean|serial|ross|checkpoint|sensormatic|nom\s+label/i, exclude: /master\s*carton|mastercarton|shipper|hsc|lithium|fire|instruction|manual|book/i },
+          { keys: ["lable_1"], test: /\bretail\s*label\b|\blabels?\b|\bsticker\b|\brating\b|\bcompliance\b|\bnameplate\b|\bupc\b|\bean\b|\bserial\b|\bross\b|\bcheckpoint\b|\bsensormatic\b|\bnom\s+label\b/i, exclude: /master\s*carton|mastercarton|shipper|hsc|lithium|fire|instruction|manual|book/i },
           { keys: ["pad_print"], test: /pad\s*print|padprint|printing|logo|artwork|ink\s*tampastar/i },
           { keys: ["lazer_actual"], test: /lazer|laser|engraving|marking|final.{0,20}graphic/i },
         ];
@@ -5416,6 +5494,21 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
           return new File([buffer], fileName, { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
         }
 
+        function rowsNeededByOriginalBomControls(rows) {
+          return rows.filter(row => {
+            const categoryKey = String(
+              row.categoryKey || row.category || ""
+            ).toLowerCase();
+            return (
+              categoryKey === "manuals" ||
+              categoryKey === "labels" ||
+              categoryKey === "components" ||
+              (Array.isArray(row.mappedAssetKeys) &&
+                row.mappedAssetKeys.length > 0)
+            );
+          });
+        }
+
         function ensureStatus() {
           let status = document.getElementById("local-bom-autoload-status");
           if (status) return status;
@@ -5463,7 +5556,77 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
           const transfer = new DataTransfer();
           transfer.items.add(file);
           setter.call(input, transfer.files);
-          input.dispatchEvent(new Event("change", { bubbles: true }));
+          window.__inspectionFeedingPreparedBom = true;
+          try {
+            input.dispatchEvent(new Event("change", { bubbles: true }));
+          } finally {
+            window.__inspectionFeedingPreparedBom = false;
+          }
+        }
+
+        function parsePreparedBomCsv(text) {
+          const records = [];
+          let record = [];
+          let field = "";
+          let quoted = false;
+          for (let index = 0; index < text.length; index++) {
+            const char = text[index];
+            if (quoted) {
+              if (char === '"' && text[index + 1] === '"') {
+                field += '"';
+                index++;
+              } else if (char === '"') {
+                quoted = false;
+              } else {
+                field += char;
+              }
+            } else if (char === '"') {
+              quoted = true;
+            } else if (char === ",") {
+              record.push(field);
+              field = "";
+            } else if (char === "\n") {
+              record.push(field.replace(/\r$/, ""));
+              if (record.some(value => value !== "")) records.push(record);
+              record = [];
+              field = "";
+            } else {
+              field += char;
+            }
+          }
+          if (field || record.length) {
+            record.push(field.replace(/\r$/, ""));
+            if (record.some(value => value !== "")) records.push(record);
+          }
+          if (records.length < 2) return [];
+          const headers = records.shift().map(value =>
+            value.replace(/^\ufeff/, "").trim()
+          );
+          return records.map(values => {
+            const row = Object.fromEntries(
+              headers.map((header, index) => [header, values[index] || ""])
+            );
+            return {
+              fg: normalizeItemId(row.fg),
+              fgName: row.fgName || "",
+              itemNumber: normalizeItemId(row.itemNumber),
+              productName: row.productName || "",
+              type: row.type || "",
+              vendor: row.vendor || "",
+              norm: row.norm || "",
+              buyerGroup: row.buyerGroup || "",
+              bomLevel: row.bomLevel || "1",
+              categoryKey: row.categoryKey || "",
+              category: row.category || "",
+              mappedAssetKeys: (row.mappedAssetKeys || "")
+                .split(";")
+                .map(value => value.trim())
+                .filter(Boolean)
+            };
+          }).filter(row =>
+            row.fg && row.itemNumber && row.productName &&
+            String(row.bomLevel) === "1"
+          );
         }
 
         async function loadPreparedBom() {
@@ -5473,7 +5636,8 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
             if (!manifestResp.ok) return null;
             const manifest = await manifestResp.json();
             if (!manifest || manifest.available === false) return null;
-            if (!manifest.preparedDataPath || !manifest.source) return null;
+            if ((!manifest.preparedCsvPath && !manifest.preparedDataPath) ||
+                !manifest.source) return null;
 
             const versionToken = encodeURIComponent(manifest.source.hash || manifest.generatedUtc || Date.now());
 
@@ -5481,10 +5645,29 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
               return { ...bomRuntimeCache.data, source: manifest.source, cacheStatus: manifest.cacheStatus || "reused" };
             }
 
-            const preparedUrl = `${manifest.preparedDataPath}?v=${versionToken}`;
-            const dataResp = await fetch(preparedUrl, { cache: "no-store" });
-            if (!dataResp.ok) return null;
-            const data = await dataResp.json();
+            let data = null;
+            if (manifest.preparedCsvPath) {
+              const csvUrl = `${manifest.preparedCsvPath}?v=${versionToken}`;
+              const csvResp = await fetch(csvUrl, { cache: "no-store" });
+              if (csvResp.ok) {
+                const rows = parsePreparedBomCsv(await csvResp.text());
+                if (rows.length) {
+                  data = {
+                    rows,
+                    recordCount: manifest.recordCount || rows.length,
+                    cacheStatus: manifest.cacheStatus
+                  };
+                }
+              }
+            }
+            if (!data && manifest.preparedDataPath) {
+              const preparedUrl =
+                `${manifest.preparedDataPath}?v=${versionToken}`;
+              const dataResp = await fetch(preparedUrl, {
+                cache: "no-store"
+              });
+              if (dataResp.ok) data = await dataResp.json();
+            }
             if (!data || !Array.isArray(data.rows)) return null;
 
             bomRuntimeCache.version = versionToken;
@@ -5507,7 +5690,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
           if (bomRuntimeCache.index) return bomRuntimeCache.index;
           const index = new Map();
           for (const row of rows) {
-            const key = (row.fg || "").toLowerCase();
+            const key = normalizeItemId(row.fg).toLowerCase();
             if (!index.has(key)) index.set(key, []);
             index.get(key).push(row);
           }
@@ -5534,7 +5717,14 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
               bomLoadSource = "Launcher-prepared cache";
               document.documentElement.classList.add("local-bom-loaded");
               buildFinishedGoodIndex(prepared.rows);
-              await feedBomToOriginalApp(createNormalizedBomFile(prepared.rows, prepared.source?.name || fallbackBomFile));
+              const compatibilityRows =
+                rowsNeededByOriginalBomControls(prepared.rows);
+              await feedBomToOriginalApp(createNormalizedBomFile(
+                compatibilityRows.length
+                  ? compatibilityRows
+                  : prepared.rows,
+                prepared.source?.name || fallbackBomFile
+              ));
               refreshSlotHints();
               window.dispatchEvent(new CustomEvent("inspection-bom-updated"));
               scheduleMasterCartonRender();
@@ -5551,6 +5741,8 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
             bomLoaded = true;
             bomLoadSource = "Excel manifest";
             document.documentElement.classList.add("local-bom-loaded");
+            bomRuntimeCache.index = null;
+            buildFinishedGoodIndex(normalizedRows);
             const loadedFile = result.loadedFiles[0];
             await feedBomToOriginalApp(createNormalizedBomFile(result.rows, loadedFile?.name || fallbackBomFile));
             refreshSlotHints();
@@ -5572,10 +5764,13 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
         }
 
         function rowsForCurrentFg() {
-          const fg = getFgCode();
+          const fg = normalizeItemId(getFgCode()).toLowerCase();
           lastFg = fg;
           if (!fg) return [];
-          return normalizedRows.filter((row) => row.fg.toLowerCase() === fg.toLowerCase());
+          const index = buildFinishedGoodIndex(normalizedRows);
+          return (index.get(fg) || []).filter(
+            row => !row.bomLevel || String(row.bomLevel) === "1"
+          );
         }
 
         function rowSearchText(row) {
@@ -5742,6 +5937,151 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
         function hintKey(row) {
           return `${lastFg}::${row.itemNumber}::${row.productName}`.toLowerCase();
         }
+
+        function bomPanelCategory(row) {
+          const cachedCategory = String(
+            row.categoryKey || row.category || ""
+          ).toLowerCase();
+          if (["manuals", "packaging", "labels", "components"].includes(
+            cachedCategory
+          )) return cachedCategory;
+          const text = rowItemSearchText(row);
+          if (/master\s*carton|mastercarton|shipping\s*carton|shipper|\bhsc\b|overpack|outer\s*carton|export\s*carton/i.test(text)) {
+            return "components";
+          }
+          if (/color\s*box|colorbox|graphic\s*card|primary\s*packaging|retail\s*packaging|packaging\s*sleeve|mailer\s*box|retail\s*label|sticker|rating|compliance|nameplate|\bupc\b|\bean\b|serial|ross|checkpoint|sensormatic|\bnom\b/i.test(text)) {
+            return "labels";
+          }
+          if (/instruction|manual|pictorial|warranty|warning|safety|booklet|accessor(y|ies)|comb|guard|head|attachment|guide|cleaning\s*brush|brush\s*cleaning|storage\s*case|pouch|(?:pe|hdpe|pe[-\s]?hd|inner|internal).{0,20}\bbag\b|\bbag\b.{0,20}(?:pe|hdpe|pe[-\s]?hd|inner|internal)/i.test(text)) {
+            return "manuals";
+          }
+          return "packaging";
+        }
+
+        function bomAssetKeysByItem(rows) {
+          const keysByItem = new Map();
+          const add = (row, assetKey) => {
+            const itemId = normalizeItemId(row.itemNumber).toLowerCase();
+            if (!itemId) return;
+            if (!keysByItem.has(itemId)) keysByItem.set(itemId, new Set());
+            keysByItem.get(itemId).add(assetKey);
+          };
+          const assetKeys = [...new Set(
+            categoryTests.flatMap(rule => rule.keys)
+          )];
+          for (const assetKey of assetKeys) {
+            for (const row of getRowsForAsset(assetKey, rows)) {
+              add(row, assetKey);
+            }
+          }
+          const cartonAssetKeys = [
+            "colorboxes_packed_mastercarton",
+            "mastercarton_left",
+            "mastercarton_right",
+            "mastercarton_top",
+            "mastercarton_bottom",
+            "mastercarton_front",
+            "mastercarton_back"
+          ];
+          for (const row of rows.filter(isMasterCartonBomRow)) {
+            cartonAssetKeys.forEach(assetKey => add(row, assetKey));
+          }
+          return keysByItem;
+        }
+
+        refreshSlotHints = function refreshConfirmedBomItems() {
+          if (hintRendering) return;
+          hintRendering = true;
+          try {
+            document.querySelectorAll(`.${hintClass}`).forEach(
+              (node) => node.remove()
+            );
+            document.querySelectorAll(".local-bom-target-with-hint").forEach(
+              (node) => node.classList.remove("local-bom-target-with-hint")
+            );
+            const rows = bomLoaded ? rowsForCurrentFg() : [];
+            const assetKeysByItem = bomAssetKeysByItem(rows);
+            const confirmedBomItems = new Map();
+            if (bomLoaded) {
+              for (const row of rows) {
+                const childItemId = normalizeItemId(row.itemNumber);
+                const childItemName = String(row.productName || "").trim();
+                if (!childItemId || confirmedBomItems.has(childItemId)) {
+                  continue;
+                }
+                confirmedBomItems.set(childItemId, {
+                  childItemId,
+                  childItemName,
+                  category: bomPanelCategory(row),
+                  mappedAssetKeys:
+                    assetKeysByItem.get(childItemId.toLowerCase()) || new Set()
+                });
+              }
+            }
+
+            const items = [...confirmedBomItems.values()];
+            const assignments = window.__inspectionCurrentAssignments || {};
+            for (const sectionKey of [
+              "manuals", "packaging", "labels", "components"
+            ]) {
+              const panel = document.querySelector(
+                `[data-local-bom-requirements="${sectionKey}"]`
+              );
+              const list = panel?.querySelector("[data-confirmed-bom-list]");
+              const count = panel?.querySelector("[data-confirmed-bom-count]");
+              if (!panel || !list || !count) continue;
+              const categoryItems = items.filter(
+                item => item.category === sectionKey
+              );
+              count.textContent =
+                `${categoryItems.length} Level-1 item${
+                  categoryItems.length === 1 ? "" : "s"
+                }`;
+              if (!categoryItems.length) {
+                list.innerHTML =
+                  `<p class="bom-items-empty">${
+                    getFgCode()
+                      ? "No Level-1 BOM items in this category."
+                      : "Enter an FG ID to load Level-1 BOM items."
+                  }</p>`;
+                continue;
+              }
+              list.innerHTML = categoryItems.map(item => {
+                const checkKey =
+                  `${normalizeItemId(getFgCode())}::${item.childItemId}`
+                    .toLowerCase();
+                const autoChecked = [...item.mappedAssetKeys].some(
+                  assetKey => Boolean(assignments[assetKey])
+                );
+                const checked =
+                  checkedHintKeys.has(checkKey) || autoChecked
+                    ? " checked"
+                    : "";
+                const autoAttribute = autoChecked
+                  ? ' data-bom-auto-mapped="true"'
+                  : "";
+                return (
+                  `<label class="bom-item-row"${autoAttribute}>` +
+                    `<input type="checkbox" data-local-bom-check="${escapeHtml(checkKey)}"${checked}>` +
+                    `<span class="bom-item-row__content">` +
+                      `<strong class="bom-item-row__id">${escapeHtml(item.childItemId)}</strong>` +
+                      `<span class="bom-item-row__name">${
+                        escapeHtml(
+                          item.childItemName || "Name unavailable in BOM"
+                        )
+                      }</span>` +
+                    `</span>` +
+                  `</label>`
+                );
+              }).join("");
+            }
+            window.__inspectionConfirmedBomItems = items;
+            window.__inspectionBomRequiredKeys = [];
+          } finally {
+            hintRendering = false;
+          }
+        };
+        window.__inspectionRefreshConfirmedBom = refreshSlotHints;
 
         function escapeHtml(value) {
           return String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
@@ -6032,6 +6372,126 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
             sections.appendChild(section);
           }
         }
+
+        renderMasterCartonLibrary = async function renderCartonsInAssetPool() {
+          const panel = ensureMasterCartonLibraryPanel();
+          if (!panel) return;
+          panel.className = "asset-pool__carton-groups";
+          const registry =
+            window.__inspectionCombinedAssetRegistry ||
+            (window.__inspectionCombinedAssetRegistry = new Map());
+          for (const [assetId, asset] of registry) {
+            if (asset.sourceType === "master-carton-library") {
+              registry.delete(assetId);
+            }
+          }
+
+          const updateCount = (pictureCount) => {
+            const count = document.getElementById("asset-pool-carton-count");
+            if (count) {
+              count.textContent = pictureCount
+                ? ` \u00b7 ${pictureCount} carton picture${
+                    pictureCount === 1 ? "" : "s"
+                  }`
+                : "";
+            }
+          };
+
+          const fgCode = getFgCode();
+          if (!fgCode) {
+            panel.replaceChildren();
+            updateCount(0);
+            return;
+          }
+          const cartons = detectedMasterCartons(fgCode);
+          const index = await loadMasterCartonPictureIndex();
+          const fragment = document.createDocumentFragment();
+          let pictureCount = 0;
+
+          for (const carton of cartons) {
+            const pictures = picturesForCarton(index, carton.cartonId);
+            const group = document.createElement("section");
+            group.className = "asset-pool__group asset-pool__carton-group";
+            const title = document.createElement("h4");
+            title.className = "asset-pool__group-title";
+            title.textContent =
+              `Master Carton Library \u00b7 ${carton.cartonId}`;
+            group.appendChild(title);
+            const items = document.createElement("div");
+            items.className = "asset-pool__items";
+
+            if (!pictures.length) {
+              const empty = document.createElement("div");
+              empty.className = "asset-pool__empty";
+              empty.textContent = "No matching carton pictures.";
+              items.appendChild(empty);
+            } else {
+              for (const record of pictures) {
+                const assetId =
+                  `master-carton:${carton.cartonId}:${record.filename}`;
+                const previewUrl = encodeURI(record.relativePath);
+                const asset = {
+                  id: assetId,
+                  filename: record.filename,
+                  sourceType: "master-carton-library",
+                  cartonId: carton.cartonId,
+                  previewUrl,
+                  relativePath: record.relativePath,
+                  draggable: true,
+                  record
+                };
+                registry.set(assetId, asset);
+                pictureCount += 1;
+
+                const picture = document.createElement("article");
+                picture.className =
+                  "image-thumb carton-library__picture";
+                picture.dataset.assetId = assetId;
+                picture.dataset.sourceType = "master-carton-library";
+                picture.draggable = true;
+                picture.tabIndex = 0;
+                picture.title = record.filename;
+                picture.innerHTML =
+                  `<div class="image-thumb__preview">` +
+                    `<img src="${escapeHtml(previewUrl)}" alt="${escapeHtml(record.filename)}" draggable="false">` +
+                  `</div>` +
+                  `<div class="image-thumb__meta">` +
+                    `<span class="image-thumb__name" title="${escapeHtml(record.filename)}">${escapeHtml(record.filename)}</span>` +
+                    `<span class="image-thumb__source">Carton ${escapeHtml(carton.cartonId)}</span>` +
+                  `</div>`;
+                picture.addEventListener("dragstart", (event) => {
+                  window.__inspectionMasterCartonDragRecord = record;
+                  picture.classList.add("image-thumb--dragging");
+                  event.dataTransfer.setData(
+                    "application/x-inspection-asset-id",
+                    assetId
+                  );
+                  event.dataTransfer.setData(
+                    "application/x-inspection-asset-source",
+                    "master-carton-library"
+                  );
+                  event.dataTransfer.setData(
+                    "application/x-inspection-master-carton-record",
+                    JSON.stringify(record)
+                  );
+                  event.dataTransfer.setData("text/plain", assetId);
+                  event.dataTransfer.effectAllowed = "copyMove";
+                });
+                picture.addEventListener("dragend", () => {
+                  picture.classList.remove("image-thumb--dragging");
+                  window.__inspectionMasterCartonDragRecord = null;
+                });
+                items.appendChild(picture);
+              }
+            }
+            group.appendChild(items);
+            fragment.appendChild(group);
+          }
+
+          panel.replaceChildren(fragment);
+          updateCount(pictureCount);
+          window.__inspectionCartonAssetCount = pictureCount;
+        };
 
         function scheduleMasterCartonRender(delay = 250) {
           window.clearTimeout(window.__masterCartonRenderTimer);
@@ -6515,6 +6975,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
             return;
           }
           if (!event.target.matches?.('.bom-panel__upload input[type="file"]')) return;
+          if (window.__inspectionFeedingPreparedBom) return;
           const file = event.target.files?.[0];
           if (!file || file.name === fallbackBomFile) return;
           try {
@@ -6523,6 +6984,8 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
               normalizedRows = dedupeRows(rows);
               window.__inspectionBomRows = normalizedRows;
               bomLoaded = true;
+              bomRuntimeCache.index = null;
+              buildFinishedGoodIndex(normalizedRows);
               document.documentElement.classList.add("local-bom-loaded");
               window.setTimeout(refreshSlotHints, 400);
               window.dispatchEvent(new CustomEvent("inspection-bom-updated"));
