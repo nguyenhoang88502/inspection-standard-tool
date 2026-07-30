@@ -1761,6 +1761,1005 @@ https://github.com/nodeca/pako/blob/main/LICENSE
        * This remains inside the existing self-contained module so the app keeps
        * using the bundled React, ExcelJS, JSZip, and smartcrop implementations.
        */
+      var DEFAULT_AUTO_TRIM_OUTER_BACKGROUND = true;
+      var EDGE_SAMPLE_RATIO = 0.025;
+      var MIN_EDGE_SAMPLE_PX = 2;
+      var MAX_EDGE_SAMPLE_PX = 24;
+      var LAB_BACKGROUND_DISTANCE = 14;
+      var AUTO_TRIM_PADDING_RATIO = 0.008;
+      var AUTO_TRIM_MIN_PADDING_PX = 2;
+      var AUTO_TRIM_MAX_PADDING_PX = 12;
+      var MIN_REMAINING_AREA_RATIO = 0.35;
+      var MAX_REMOVED_AREA_RATIO = 0.60;
+      var MIN_CROP_WIDTH_PX = 80;
+      var MIN_CROP_HEIGHT_PX = 80;
+      var TARGET_CONTAIN_MARGIN_RATIO = 0.005;
+      var INSPECTION_TRIM_ANALYSIS_LONG_EDGE = 960;
+      var inspectionAutoTrimCache = new WeakMap();
+      var inspectionTrimmedFileCache = new WeakMap();
+      var INSPECTION_STRICT_TRIM_KEYS = new Set([
+        "lable_1",
+        "mastercaton_label",
+        "ib",
+        "safety",
+        "pad_print",
+        "lazer_actual"
+      ]);
+
+      function inspectionClamp(value, minimum, maximum) {
+        return Math.max(minimum, Math.min(maximum, value));
+      }
+
+      function inspectionRgbToLab(red, green, blue) {
+        const linear = value => {
+          value /= 255;
+          return value > 0.04045
+            ? Math.pow((value + 0.055) / 1.055, 2.4)
+            : value / 12.92;
+        };
+        const r = linear(red);
+        const g = linear(green);
+        const b = linear(blue);
+        let x = (r * 0.4124 + g * 0.3576 + b * 0.1805) / 0.95047;
+        let y = (r * 0.2126 + g * 0.7152 + b * 0.0722);
+        let z = (r * 0.0193 + g * 0.1192 + b * 0.9505) / 1.08883;
+        const pivot = value => value > 0.008856
+          ? Math.cbrt(value)
+          : 7.787 * value + 16 / 116;
+        x = pivot(x);
+        y = pivot(y);
+        z = pivot(z);
+        return {
+          l: 116 * y - 16,
+          a: 500 * (x - y),
+          b: 200 * (y - z)
+        };
+      }
+
+      function inspectionLabDistance(first, second) {
+        return Math.hypot(
+          first.l - second.l,
+          first.a - second.a,
+          first.b - second.b
+        );
+      }
+
+      function inspectionMedian(values) {
+        if (!values.length) return 0;
+        values.sort((first, second) => first - second);
+        const middle = Math.floor(values.length / 2);
+        return values.length % 2
+          ? values[middle]
+          : (values[middle - 1] + values[middle]) / 2;
+      }
+
+      function estimateEdgeBackgroundColor(imageData, width, height) {
+        const data = imageData.data || imageData;
+        const thickness = inspectionClamp(
+          Math.round(Math.min(width, height) * EDGE_SAMPLE_RATIO),
+          MIN_EDGE_SAMPLE_PX,
+          MAX_EDGE_SAMPLE_PX
+        );
+        const samples = [];
+        let sampledPixels = 0;
+        const addSample = (x, y) => {
+          const offset = (y * width + x) * 4;
+          const alpha = data[offset + 3];
+          if (alpha < 32) return;
+          sampledPixels += 1;
+          const red = data[offset];
+          const green = data[offset + 1];
+          const blue = data[offset + 2];
+          const maximum = Math.max(red, green, blue);
+          const minimum = Math.min(red, green, blue);
+          const saturation = maximum
+            ? (maximum - minimum) / maximum
+            : 0;
+          const brightness =
+            (red * 0.2126 + green * 0.7152 + blue * 0.0722) / 255;
+          if (brightness >= 0.72 && saturation <= 0.22) {
+            samples.push({ red, green, blue });
+          }
+        };
+        const step = Math.max(
+          1,
+          Math.floor(
+            (width * thickness * 2 + height * thickness * 2) / 36000
+          )
+        );
+        for (let y = 0; y < thickness; y += step) {
+          for (let x = 0; x < width; x += step) {
+            addSample(x, y);
+            addSample(x, height - 1 - y);
+          }
+        }
+        for (let x = 0; x < thickness; x += step) {
+          for (let y = thickness; y < height - thickness; y += step) {
+            addSample(x, y);
+            addSample(width - 1 - x, y);
+          }
+        }
+        if (samples.length < Math.max(24, sampledPixels * 0.08)) {
+          return {
+            color: null,
+            lab: null,
+            confidence: 0,
+            sampleRatio: sampledPixels ? samples.length / sampledPixels : 0,
+            thickness
+          };
+        }
+        const red = inspectionMedian(samples.map(sample => sample.red));
+        const green = inspectionMedian(samples.map(sample => sample.green));
+        const blue = inspectionMedian(samples.map(sample => sample.blue));
+        const lab = inspectionRgbToLab(red, green, blue);
+        const inliers = samples.reduce((count, sample) => {
+          const distance = inspectionLabDistance(
+            inspectionRgbToLab(sample.red, sample.green, sample.blue),
+            lab
+          );
+          return count + (distance <= 18 ? 1 : 0);
+        }, 0);
+        const sampleRatio = sampledPixels
+          ? samples.length / sampledPixels
+          : 0;
+        const inlierRatio = samples.length ? inliers / samples.length : 0;
+        return {
+          color: { red, green, blue },
+          lab,
+          confidence: inspectionClamp(
+            inlierRatio * 0.65 + Math.min(1, sampleRatio * 2) * 0.35,
+            0,
+            1
+          ),
+          sampleRatio,
+          inlierRatio,
+          thickness
+        };
+      }
+
+      async function inspectionDecodeImageSource(source) {
+        const value = source?.file || source;
+        if (
+          value instanceof HTMLCanvasElement ||
+          value instanceof HTMLImageElement ||
+          (typeof ImageBitmap !== "undefined" && value instanceof ImageBitmap)
+        ) {
+          if (value instanceof HTMLImageElement && !value.complete) {
+            await new Promise((resolve, reject) => {
+              value.addEventListener("load", resolve, { once: true });
+              value.addEventListener(
+                "error",
+                () => reject(new Error("Image decoding failed.")),
+                { once: true }
+              );
+            });
+          }
+          return {
+            drawable: value,
+            width: value.naturalWidth || value.width,
+            height: value.naturalHeight || value.height,
+            release() {}
+          };
+        }
+        let blob = value;
+        if (typeof value === "string") {
+          const response = await fetch(value);
+          if (!response.ok) throw new Error("Image source could not be loaded.");
+          blob = await response.blob();
+        }
+        if (!(blob instanceof Blob)) {
+          throw new Error("Unsupported image source.");
+        }
+        if (typeof createImageBitmap === "function") {
+          try {
+            const bitmap = await createImageBitmap(blob, {
+              imageOrientation: "from-image"
+            });
+            return {
+              drawable: bitmap,
+              width: bitmap.width,
+              height: bitmap.height,
+              release() { bitmap.close?.(); }
+            };
+          } catch {}
+        }
+        const objectUrl = URL.createObjectURL(blob);
+        const image = new Image();
+        image.decoding = "async";
+        await new Promise((resolve, reject) => {
+          image.onload = resolve;
+          image.onerror = () => reject(new Error("Image decoding failed."));
+          image.src = objectUrl;
+        });
+        return {
+          drawable: image,
+          width: image.naturalWidth,
+          height: image.naturalHeight,
+          release() { URL.revokeObjectURL(objectUrl); }
+        };
+      }
+
+      function inspectionManualCropPixels(manualCrop, width, height) {
+        if (!manualCrop || manualCrop === true) {
+          return { x: 0, y: 0, width, height };
+        }
+        const percentage =
+          manualCrop.units === "percent" ||
+          (
+            manualCrop.x <= 100 &&
+            manualCrop.y <= 100 &&
+            manualCrop.width <= 100 &&
+            manualCrop.height <= 100
+          );
+        const scaleX = percentage ? width / 100 : 1;
+        const scaleY = percentage ? height / 100 : 1;
+        const x = inspectionClamp(
+          Math.round((manualCrop.x || 0) * scaleX),
+          0,
+          width - 1
+        );
+        const y = inspectionClamp(
+          Math.round((manualCrop.y || 0) * scaleY),
+          0,
+          height - 1
+        );
+        return {
+          x,
+          y,
+          width: inspectionClamp(
+            Math.round((manualCrop.width || 100) * scaleX),
+            1,
+            width - x
+          ),
+          height: inspectionClamp(
+            Math.round((manualCrop.height || 100) * scaleY),
+            1,
+            height - y
+          )
+        };
+      }
+
+      function inspectionUntrimmedResult(canvas, reason, metadata = {}) {
+        return {
+          canvas,
+          applied: false,
+          crop: { x: 0, y: 0, width: canvas.width, height: canvas.height },
+          removedPixels: { left: 0, top: 0, right: 0, bottom: 0 },
+          removedAreaRatio: 0,
+          confidence: metadata.confidence || 0,
+          reason,
+          originalWidth: metadata.originalWidth || canvas.width,
+          originalHeight: metadata.originalHeight || canvas.height,
+          trimmedWidth: canvas.width,
+          trimmedHeight: canvas.height,
+          manualCropApplied: !!metadata.manualCropApplied
+        };
+      }
+
+      async function autoTrimOuterBackground({
+        source,
+        rotation = 0,
+        manualCrop = null,
+        enabled = true,
+        aggressive = false
+      }) {
+        let decoded;
+        let fallbackCanvas = null;
+        try {
+          decoded = await inspectionDecodeImageSource(source);
+          const decodedWidth = decoded.width;
+          const decodedHeight = decoded.height;
+          const normalizedRotation =
+            ((Number(rotation) || 0) % 360 + 360) % 360;
+          const quarterTurn =
+            normalizedRotation === 90 || normalizedRotation === 270;
+          const rotatedCanvas = document.createElement("canvas");
+          rotatedCanvas.width = quarterTurn
+            ? decoded.height
+            : decoded.width;
+          rotatedCanvas.height = quarterTurn
+            ? decoded.width
+            : decoded.height;
+          const rotatedContext = rotatedCanvas.getContext("2d", {
+            alpha: true,
+            willReadFrequently: true
+          });
+          if (!rotatedContext) throw new Error("Canvas is unavailable.");
+          rotatedContext.save();
+          rotatedContext.translate(
+            rotatedCanvas.width / 2,
+            rotatedCanvas.height / 2
+          );
+          rotatedContext.rotate(normalizedRotation * Math.PI / 180);
+          rotatedContext.drawImage(
+            decoded.drawable,
+            -decoded.width / 2,
+            -decoded.height / 2
+          );
+          rotatedContext.restore();
+          fallbackCanvas = rotatedCanvas;
+          decoded.release();
+          decoded = null;
+
+          const manualBounds = inspectionManualCropPixels(
+            manualCrop,
+            rotatedCanvas.width,
+            rotatedCanvas.height
+          );
+          let workingCanvas = rotatedCanvas;
+          const manualCropApplied =
+            !!manualCrop &&
+            (
+              manualBounds.x > 0 ||
+              manualBounds.y > 0 ||
+              manualBounds.width < rotatedCanvas.width ||
+              manualBounds.height < rotatedCanvas.height ||
+              manualCrop === true
+            );
+          if (
+            manualBounds.x > 0 ||
+            manualBounds.y > 0 ||
+            manualBounds.width < rotatedCanvas.width ||
+            manualBounds.height < rotatedCanvas.height
+          ) {
+            workingCanvas = document.createElement("canvas");
+            workingCanvas.width = manualBounds.width;
+            workingCanvas.height = manualBounds.height;
+            workingCanvas.getContext("2d", { alpha: true }).drawImage(
+              rotatedCanvas,
+              manualBounds.x,
+              manualBounds.y,
+              manualBounds.width,
+              manualBounds.height,
+              0,
+              0,
+              manualBounds.width,
+              manualBounds.height
+            );
+            rotatedCanvas.width = 1;
+            rotatedCanvas.height = 1;
+          }
+          fallbackCanvas = workingCanvas;
+          if (!enabled) {
+            return inspectionUntrimmedResult(
+              workingCanvas,
+              manualCropApplied ? "MANUAL_CROP_ONLY" : "NO_SIGNIFICANT_BORDER",
+              {
+                originalWidth: decodedWidth,
+                originalHeight: decodedHeight,
+                manualCropApplied
+              }
+            );
+          }
+
+          const analysisScale = Math.min(
+            1,
+            INSPECTION_TRIM_ANALYSIS_LONG_EDGE /
+              Math.max(workingCanvas.width, workingCanvas.height)
+          );
+          const analysis = document.createElement("canvas");
+          analysis.width = Math.max(
+            1,
+            Math.round(workingCanvas.width * analysisScale)
+          );
+          analysis.height = Math.max(
+            1,
+            Math.round(workingCanvas.height * analysisScale)
+          );
+          const context = analysis.getContext("2d", {
+            alpha: true,
+            willReadFrequently: true
+          });
+          context.drawImage(
+            workingCanvas,
+            0,
+            0,
+            analysis.width,
+            analysis.height
+          );
+          const pixels = context.getImageData(
+            0,
+            0,
+            analysis.width,
+            analysis.height
+          );
+          const background = estimateEdgeBackgroundColor(
+            pixels,
+            analysis.width,
+            analysis.height
+          );
+          if (!background.lab || background.confidence < 0.43) {
+            analysis.width = 1;
+            analysis.height = 1;
+            return inspectionUntrimmedResult(
+              workingCanvas,
+              "LOW_CONFIDENCE",
+              {
+                confidence: background.confidence,
+                originalWidth: workingCanvas.width,
+                originalHeight: workingCanvas.height,
+                manualCropApplied
+              }
+            );
+          }
+
+          const width = analysis.width;
+          const height = analysis.height;
+          const count = width * height;
+          const data = pixels.data;
+          const luminance = new Uint8Array(count);
+          for (let index = 0; index < count; index += 1) {
+            const offset = index * 4;
+            luminance[index] = Math.round(
+              data[offset] * 0.2126 +
+              data[offset + 1] * 0.7152 +
+              data[offset + 2] * 0.0722
+            );
+          }
+          const gradient = new Uint8Array(count);
+          for (let y = 0; y < height; y += 1) {
+            for (let x = 0; x < width; x += 1) {
+              const index = y * width + x;
+              const value = luminance[index];
+              let maximum = 0;
+              if (x > 0) maximum = Math.max(
+                maximum,
+                Math.abs(value - luminance[index - 1])
+              );
+              if (x + 1 < width) maximum = Math.max(
+                maximum,
+                Math.abs(value - luminance[index + 1])
+              );
+              if (y > 0) maximum = Math.max(
+                maximum,
+                Math.abs(value - luminance[index - width])
+              );
+              if (y + 1 < height) maximum = Math.max(
+                maximum,
+                Math.abs(value - luminance[index + width])
+              );
+              gradient[index] = maximum;
+            }
+          }
+
+          const strict = !aggressive || manualCropApplied;
+          const distanceLimit = strict ? 12 : LAB_BACKGROUND_DISTANCE + 2;
+          const gradientLimit = strict ? 22 : 30;
+          const minimumLightness = strict ? 84 : 76;
+          const backgroundMask = new Uint8Array(count);
+          const queue = new Int32Array(count);
+          let queueStart = 0;
+          let queueEnd = 0;
+          const qualifies = index => {
+            if (backgroundMask[index]) return false;
+            const offset = index * 4;
+            if (data[offset + 3] < 32) return true;
+            if (gradient[index] > gradientLimit) return false;
+            const lab = inspectionRgbToLab(
+              data[offset],
+              data[offset + 1],
+              data[offset + 2]
+            );
+            return (
+              lab.l >= minimumLightness &&
+              inspectionLabDistance(lab, background.lab) <= distanceLimit
+            );
+          };
+          const enqueue = index => {
+            if (!qualifies(index)) return;
+            backgroundMask[index] = 1;
+            queue[queueEnd++] = index;
+          };
+          for (let x = 0; x < width; x += 1) {
+            enqueue(x);
+            enqueue((height - 1) * width + x);
+          }
+          for (let y = 1; y < height - 1; y += 1) {
+            enqueue(y * width);
+            enqueue(y * width + width - 1);
+          }
+          while (queueStart < queueEnd) {
+            const index = queue[queueStart++];
+            const x = index % width;
+            if (x > 0) enqueue(index - 1);
+            if (x + 1 < width) enqueue(index + 1);
+            if (index >= width) enqueue(index - width);
+            if (index + width < count) enqueue(index + width);
+          }
+
+          const columns = new Uint32Array(width);
+          const rows = new Uint32Array(height);
+          for (let index = 0; index < count; index += 1) {
+            if (!backgroundMask[index]) {
+              const x = index % width;
+              const y = Math.floor(index / width);
+              columns[x] += 1;
+              rows[y] += 1;
+            }
+          }
+          const columnThreshold = Math.max(2, Math.floor(height * 0.004));
+          const rowThreshold = Math.max(2, Math.floor(width * 0.004));
+          let left = 0;
+          let right = width - 1;
+          let top = 0;
+          let bottom = height - 1;
+          while (left < right && columns[left] < columnThreshold) left += 1;
+          while (right > left && columns[right] < columnThreshold) right -= 1;
+          while (top < bottom && rows[top] < rowThreshold) top += 1;
+          while (bottom > top && rows[bottom] < rowThreshold) bottom -= 1;
+          const padding = inspectionClamp(
+            Math.round(Math.min(width, height) * AUTO_TRIM_PADDING_RATIO),
+            AUTO_TRIM_MIN_PADDING_PX,
+            AUTO_TRIM_MAX_PADDING_PX
+          );
+          left = Math.max(0, left - padding);
+          top = Math.max(0, top - padding);
+          right = Math.min(width - 1, right + padding);
+          bottom = Math.min(height - 1, bottom + padding);
+          if (left / width > 0.45) left = 0;
+          if ((width - 1 - right) / width > 0.45) right = width - 1;
+          if (top / height > 0.45) top = 0;
+          if ((height - 1 - bottom) / height > 0.45) bottom = height - 1;
+
+          const cropX = Math.floor(left / analysisScale);
+          const cropY = Math.floor(top / analysisScale);
+          const cropRight = Math.min(
+            workingCanvas.width,
+            Math.ceil((right + 1) / analysisScale)
+          );
+          const cropBottom = Math.min(
+            workingCanvas.height,
+            Math.ceil((bottom + 1) / analysisScale)
+          );
+          const cropWidth = cropRight - cropX;
+          const cropHeight = cropBottom - cropY;
+          const cropArea = cropWidth * cropHeight;
+          const workingWidth = workingCanvas.width;
+          const workingHeight = workingCanvas.height;
+          const sourceArea = workingWidth * workingHeight;
+          const removedAreaRatio = 1 - cropArea / sourceArea;
+          const horizontalChange =
+            (cropX + workingCanvas.width - cropRight) / workingCanvas.width;
+          const verticalChange =
+            (cropY + workingCanvas.height - cropBottom) / workingCanvas.height;
+          const significant =
+            Math.max(horizontalChange, verticalChange) >= 0.015;
+          const maximumRemoved = manualCropApplied
+            ? 0.25
+            : strict
+              ? 0.42
+              : MAX_REMOVED_AREA_RATIO;
+          const unsafe =
+            cropWidth < Math.min(MIN_CROP_WIDTH_PX, workingCanvas.width) ||
+            cropHeight < Math.min(MIN_CROP_HEIGHT_PX, workingCanvas.height) ||
+            cropArea / sourceArea < MIN_REMAINING_AREA_RATIO ||
+            removedAreaRatio > maximumRemoved ||
+            cropWidth / workingCanvas.width < 0.18 ||
+            cropHeight / workingCanvas.height < 0.18;
+          analysis.width = 1;
+          analysis.height = 1;
+          if (!significant) {
+            return inspectionUntrimmedResult(
+              workingCanvas,
+              "NO_SIGNIFICANT_BORDER",
+              {
+                confidence: background.confidence,
+                originalWidth: workingCanvas.width,
+                originalHeight: workingCanvas.height,
+                manualCropApplied
+              }
+            );
+          }
+          if (unsafe) {
+            return inspectionUntrimmedResult(
+              workingCanvas,
+              "UNSAFE_AREA_REDUCTION",
+              {
+                confidence: background.confidence,
+                originalWidth: workingCanvas.width,
+                originalHeight: workingCanvas.height,
+                manualCropApplied
+              }
+            );
+          }
+
+          const trimmedCanvas = document.createElement("canvas");
+          trimmedCanvas.width = cropWidth;
+          trimmedCanvas.height = cropHeight;
+          trimmedCanvas.getContext("2d", { alpha: true }).drawImage(
+            workingCanvas,
+            cropX,
+            cropY,
+            cropWidth,
+            cropHeight,
+            0,
+            0,
+            cropWidth,
+            cropHeight
+          );
+          workingCanvas.width = 1;
+          workingCanvas.height = 1;
+          const confidence = inspectionClamp(
+            background.confidence * 0.75 +
+              Math.min(1, removedAreaRatio / 0.18) * 0.25,
+            0,
+            0.99
+          );
+          return {
+            canvas: trimmedCanvas,
+            applied: true,
+            crop: {
+              x: cropX,
+              y: cropY,
+              width: cropWidth,
+              height: cropHeight
+            },
+            removedPixels: {
+              left: cropX,
+              top: cropY,
+              right: workingWidth - cropRight,
+              bottom: workingHeight - cropBottom
+            },
+            removedAreaRatio,
+            confidence,
+            reason: "TRIM_APPLIED",
+            originalWidth: workingWidth,
+            originalHeight: workingHeight,
+            trimmedWidth: cropWidth,
+            trimmedHeight: cropHeight,
+            manualCropApplied
+          };
+        } catch (error) {
+          decoded?.release?.();
+          if (!fallbackCanvas) {
+            fallbackCanvas = document.createElement("canvas");
+            fallbackCanvas.width = 1;
+            fallbackCanvas.height = 1;
+          }
+          return inspectionUntrimmedResult(fallbackCanvas, "INVALID_IMAGE", {
+            confidence: 0
+          });
+        }
+      }
+      window.autoTrimOuterBackground = autoTrimOuterBackground;
+      window.estimateEdgeBackgroundColor = estimateEdgeBackgroundColor;
+
+      function inspectionTrimCacheKey(slot) {
+        const key = slot?.templateKey || slot?.workbookKey || slot?.id || "";
+        return INSPECTION_STRICT_TRIM_KEYS.has(key) ? "strict" : "photo";
+      }
+
+      function inspectionAutoTrimForFile(file, slot) {
+        let slotCache = inspectionAutoTrimCache.get(file);
+        if (!slotCache) {
+          slotCache = new Map();
+          inspectionAutoTrimCache.set(file, slotCache);
+        }
+        const cacheKey = inspectionTrimCacheKey(slot);
+        if (!slotCache.has(cacheKey)) {
+          const strict = cacheKey === "strict";
+          slotCache.set(cacheKey, autoTrimOuterBackground({
+            source: file,
+            rotation: 0,
+            manualCrop: !!file.__inspectionManualCrop,
+            enabled: file.__inspectionAutoTrimEnabled !== false &&
+              DEFAULT_AUTO_TRIM_OUTER_BACKGROUND,
+            aggressive: !strict
+          }));
+        }
+        return slotCache.get(cacheKey);
+      }
+
+      function inspectionDefineFileMetadata(file, name, value) {
+        try {
+          Object.defineProperty(file, name, {
+            value,
+            configurable: true
+          });
+        } catch {}
+      }
+
+      function inspectionAttachImageLineage(file, image) {
+        if (!file || !image?.file) return file;
+        inspectionDefineFileMetadata(
+          file,
+          "__inspectionOriginalFile",
+          image.file.__inspectionOriginalFile || image.file
+        );
+        if (image.file.__inspectionRotation != null) {
+          inspectionDefineFileMetadata(
+            file,
+            "__inspectionRotation",
+            image.file.__inspectionRotation
+          );
+        }
+        if (
+          file.__inspectionAutoTrimEnabled == null &&
+          image.file.__inspectionAutoTrimEnabled != null
+        ) {
+          inspectionDefineFileMetadata(
+            file,
+            "__inspectionAutoTrimEnabled",
+            image.file.__inspectionAutoTrimEnabled
+          );
+        }
+        if (
+          file.__inspectionManualCrop == null &&
+          image.file.__inspectionManualCrop
+        ) {
+          inspectionDefineFileMetadata(
+            file,
+            "__inspectionManualCrop",
+            true
+          );
+          inspectionDefineFileMetadata(
+            file,
+            "__inspectionManualCropData",
+            image.file.__inspectionManualCropData || null
+          );
+        }
+        return file;
+      }
+
+      function inspectionMarkRotation(file, image, degrees) {
+        inspectionAttachImageLineage(file, image);
+        inspectionDefineFileMetadata(
+          file,
+          "__inspectionRotation",
+          (
+            (image?.file?.__inspectionRotation || 0) +
+            degrees +
+            360
+          ) % 360
+        );
+        return file;
+      }
+
+      function inspectionFileWithAutoTrimSetting(image, enabled) {
+        const source = image.file;
+        const file = new File([source], source.name, {
+          type: source.type || "image/png",
+          lastModified: source.lastModified || Date.now()
+        });
+        inspectionAttachImageLineage(file, image);
+        inspectionDefineFileMetadata(
+          file,
+          "__inspectionAutoTrimEnabled",
+          enabled
+        );
+        inspectionDefineFileMetadata(
+          file,
+          "__inspectionManualCrop",
+          !!source.__inspectionManualCrop
+        );
+        inspectionDefineFileMetadata(
+          file,
+          "__inspectionManualCropData",
+          source.__inspectionManualCropData || null
+        );
+        return file;
+      }
+
+      function inspectionRestoreOriginalFile(image) {
+        const original = image.file.__inspectionOriginalFile;
+        if (!original) return image.file;
+        const file = new File([original], original.name, {
+          type: original.type || "image/png",
+          lastModified: original.lastModified || Date.now()
+        });
+        inspectionDefineFileMetadata(
+          file,
+          "__inspectionAutoTrimEnabled",
+          image.file.__inspectionAutoTrimEnabled !== false
+        );
+        return file;
+      }
+
+      async function inspectionTrimmedFileForSource(file, slot) {
+        let slotCache = inspectionTrimmedFileCache.get(file);
+        if (!slotCache) {
+          slotCache = new Map();
+          inspectionTrimmedFileCache.set(file, slotCache);
+        }
+        const cacheKey = inspectionTrimCacheKey(slot);
+        if (!slotCache.has(cacheKey)) {
+          slotCache.set(cacheKey, (async () => {
+            const trim = await inspectionAutoTrimForFile(file, slot);
+            trim.originalByteLength = file.size || 0;
+            trim.originalName = file.name || "";
+            let outputFile;
+            if (trim.applied) {
+              const blob = await inspectionCanvasToBlob(
+                trim.canvas,
+                "image/png"
+              );
+              outputFile = new File(
+                [blob],
+                `${file.name.replace(/\.[^.]+$/, "")}-trimmed.png`,
+                {
+                  type: "image/png",
+                  lastModified: file.lastModified || Date.now()
+                }
+              );
+            } else {
+              outputFile = new File([file], file.name, {
+                type: file.type || "image/png",
+                lastModified: file.lastModified || Date.now()
+              });
+            }
+            inspectionDefineFileMetadata(
+              outputFile,
+              "__inspectionAutoTrimProcessed",
+              true
+            );
+            inspectionDefineFileMetadata(
+              outputFile,
+              "__inspectionTrimRecords",
+              [trim]
+            );
+            inspectionDefineFileMetadata(
+              outputFile,
+              "__inspectionOriginalFile",
+              file.__inspectionOriginalFile || file
+            );
+            inspectionDefineFileMetadata(
+              outputFile,
+              "__inspectionManualCrop",
+              !!file.__inspectionManualCrop
+            );
+            inspectionDefineFileMetadata(
+              outputFile,
+              "__inspectionManualCropData",
+              file.__inspectionManualCropData || null
+            );
+            return { file: outputFile, trim };
+          })());
+        }
+        return slotCache.get(cacheKey);
+      }
+
+      function inspectionTrimDiagnostic(slot, assetId, trim) {
+        return {
+          slotId: slot?.id || slot?.templateKey || "",
+          assetId: assetId || "",
+          originalWidth: trim.originalWidth,
+          originalHeight: trim.originalHeight,
+          autoTrimApplied: trim.applied,
+          trimConfidence: trim.confidence,
+          removedLeft: trim.removedPixels.left,
+          removedTop: trim.removedPixels.top,
+          removedRight: trim.removedPixels.right,
+          removedBottom: trim.removedPixels.bottom,
+          trimmedWidth: trim.trimmedWidth,
+          trimmedHeight: trim.trimmedHeight,
+          removedAreaRatio: trim.removedAreaRatio,
+          reason: trim.reason
+        };
+      }
+
+      function inspectionEffectiveAssignedImage({
+        image,
+        slot,
+        alt,
+        onLoad
+      }) {
+        const [source, setSource] = Et.useState(image.previewUrl);
+        const [trimmed, setTrimmed] = Et.useState(false);
+        Et.useEffect(() => {
+          let cancelled = false;
+          let objectUrl = "";
+          setSource(image.previewUrl);
+          setTrimmed(false);
+          inspectionAutoTrimForFile(image.file, slot)
+            .then(async result => {
+              if (cancelled) return;
+              image.autoTrim = {
+                enabled: true,
+                applied: result.applied,
+                crop: result.crop,
+                confidence: result.confidence,
+                reason: result.reason
+              };
+              if (!result.applied) return;
+              const blob = await inspectionCanvasToBlob(
+                result.canvas,
+                "image/jpeg",
+                0.9
+              );
+              if (cancelled) return;
+              objectUrl = URL.createObjectURL(blob);
+              setSource(objectUrl);
+              setTrimmed(true);
+            })
+            .catch(() => {});
+          return () => {
+            cancelled = true;
+            if (objectUrl) URL.revokeObjectURL(objectUrl);
+          };
+        }, [image.id, image.file, slot?.templateKey]);
+        return mt.jsxs(Et.Fragment, {
+          children: [
+            mt.jsx("img", {
+              src: source,
+              alt,
+              draggable: false,
+              onLoad
+            }),
+            trimmed && mt.jsx("span", {
+              className: "asset-preview__trimmed-badge",
+              children: "Border trimmed"
+            })
+          ]
+        });
+      }
+
+      g7 = async function inspectionResolveTrimmedAssignmentImage(
+        slot,
+        assignments,
+        imageLibrary
+      ) {
+        const assignedSources = slot.assetKeys
+          .map(assetKey => ({
+            assetKey,
+            imageId: assignments[assetKey],
+            image: imageLibrary.get(assignments[assetKey])
+          }))
+          .filter(source => Boolean(source.imageId));
+        if (assignedSources.length === 0) return null;
+        for (const source of assignedSources) {
+          if (!source.image?.file) {
+            throw new Error(
+              `Assigned image "${source.imageId}" for ${slot.templateKey} is unavailable.`
+            );
+          }
+        }
+        const preparedSources = await Promise.all(
+          assignedSources.map(async source => {
+            const prepared = await inspectionTrimmedFileForSource(
+              source.image.file,
+              slot
+            );
+            source.image.autoTrim = {
+              enabled: true,
+              applied: prepared.trim.applied,
+              crop: prepared.trim.crop,
+              confidence: prepared.trim.confidence,
+              reason: prepared.trim.reason
+            };
+            return {
+              ...prepared,
+              assetId: source.imageId
+            };
+          })
+        );
+        const sourceFiles = preparedSources.map(source => source.file);
+        const finalImage =
+          sourceFiles.length > 1 && slot.mergeDirection === "vertical"
+            ? await Kk(sourceFiles, slot.id)
+            : sourceFiles.length > 1 && slot.mergeDirection === "horizontal"
+              ? await Gk(sourceFiles, slot.id)
+              : sourceFiles[0];
+        inspectionDefineFileMetadata(
+          finalImage,
+          "__sourceImageCount",
+          sourceFiles.length
+        );
+        inspectionDefineFileMetadata(
+          finalImage,
+          "__inspectionAutoTrimProcessed",
+          true
+        );
+        inspectionDefineFileMetadata(
+          finalImage,
+          "__inspectionTrimRecords",
+          preparedSources.map(source => ({
+            assetId: source.assetId,
+            ...source.trim
+          }))
+        );
+        return finalImage;
+      };
+
       var SLOT_DEFINITIONS = {
         ib: {
           id: "ib", displayName: "Instruction Book", category: "Documents",
@@ -2028,6 +3027,55 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         return anchor;
       }
 
+      function inspectionContainedTwoCellAnchor(
+        worksheet,
+        range,
+        sourceWidth,
+        sourceHeight
+      ) {
+        const bounds = inspectionRangePixelBounds(worksheet, range);
+        const marginPx = Math.max(
+          0,
+          Math.min(bounds.width, bounds.height) *
+            TARGET_CONTAIN_MARGIN_RATIO
+        );
+        const placement = inspectionContainImageInRange(
+          sourceWidth,
+          sourceHeight,
+          bounds,
+          marginPx
+        );
+        const topLeftColumn = inspectionNativeColumnAnchor(
+          worksheet,
+          bounds.start.col,
+          placement.leftOffset
+        );
+        const topLeftRow = inspectionNativeRowAnchor(
+          worksheet,
+          bounds.start.row,
+          placement.topOffset
+        );
+        const bottomRightColumn = inspectionNativeColumnAnchor(
+          worksheet,
+          bounds.start.col,
+          placement.leftOffset + placement.width
+        );
+        const bottomRightRow = inspectionNativeRowAnchor(
+          worksheet,
+          bounds.start.row,
+          placement.topOffset + placement.height
+        );
+        return {
+          anchor: {
+            tl: { ...topLeftColumn, ...topLeftRow },
+            br: { ...bottomRightColumn, ...bottomRightRow },
+            editAs: "oneCell"
+          },
+          placement,
+          bounds
+        };
+      }
+
       function inspectionResolveFinalRange(slot) {
         if (slot.packedDestinationKey) {
           return INSPECTION_COVER_SLOT_RANGES[slot.packedDestinationKey] ||
@@ -2117,31 +3165,43 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         slot,
         rangeBounds
       }) {
-        const image = await Nx(file);
+        const trimRecords = file.__inspectionTrimRecords
+          ? [...file.__inspectionTrimRecords]
+          : [];
+        let image;
+        if (file.__inspectionAutoTrimProcessed) {
+          image = await Nx(file);
+        } else {
+          const trim = await inspectionAutoTrimForFile(file, slot);
+          image = trim.canvas;
+          trimRecords.push(trim);
+        }
         const sourceWidth = image.naturalWidth || image.width;
         const sourceHeight = image.naturalHeight || image.height;
-        const targetRatio = rangeBounds.width / rangeBounds.height;
         const longEdge = inspectionExportLongEdge(slot, rangeBounds);
         const canvas = document.createElement("canvas");
-        if (targetRatio >= 1) {
+        const sourceRatio = sourceWidth / sourceHeight;
+        if (sourceRatio >= 1) {
           canvas.width = longEdge;
-          canvas.height = Math.max(1, Math.round(longEdge / targetRatio));
+          canvas.height = Math.max(1, Math.round(longEdge / sourceRatio));
         } else {
           canvas.height = longEdge;
-          canvas.width = Math.max(1, Math.round(longEdge * targetRatio));
+          canvas.width = Math.max(1, Math.round(longEdge * sourceRatio));
         }
         const context = canvas.getContext("2d", { alpha: true });
         if (!context) throw new Error("Canvas rendering is not available.");
         const format = inspectionExportFormatForSlot(slot);
-        context.fillStyle = "#ffffff";
-        context.fillRect(0, 0, canvas.width, canvas.height);
+        if (format.extension !== "png") {
+          context.fillStyle = "#ffffff";
+          context.fillRect(0, 0, canvas.width, canvas.height);
+        }
         const contain = calculateContainRect({
           sourceWidth,
           sourceHeight,
           targetWidth: canvas.width,
           targetHeight: canvas.height,
           allowUpscale: true,
-          marginRatio: 0.02
+          marginRatio: TARGET_CONTAIN_MARGIN_RATIO
         });
         context.imageSmoothingEnabled = true;
         context.imageSmoothingQuality = "high";
@@ -2177,15 +3237,16 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           width: contain.width,
           height: contain.height,
           canvasWidth: Math.max(1, Math.round(
-            targetRatio >= 1 ? longEdge : longEdge * targetRatio
+            sourceRatio >= 1 ? longEdge : longEdge * sourceRatio
           )),
           canvasHeight: Math.max(1, Math.round(
-            targetRatio >= 1 ? longEdge / targetRatio : longEdge
+            sourceRatio >= 1 ? longEdge / sourceRatio : longEdge
           )),
           sourceWidth,
           sourceHeight,
           sourceByteLength: file.size || 0,
           finalByteLength: buffer.byteLength,
+          trimRecords,
           release() {
             this.blob = null;
             this.buffer = null;
@@ -2224,7 +3285,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           optimizedTotalImageBytes: 0,
           finalXlsxByteSize: 0,
           sourceAssets: new Set(),
-          warnings: []
+          warnings: [],
+          trimDiagnostics: []
         };
       };
 
@@ -2300,19 +3362,32 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           } else {
             report.reusedMediaReferences += 1;
           }
-          const sourceKey = [
-            finalImage.name,
-            finalImage.size,
-            finalImage.lastModified
-          ].join("::");
-          if (!report.sourceAssets.has(sourceKey)) {
-            report.sourceAssets.add(sourceKey);
-            report.originalTotalImageBytes += finalImage.size || 0;
+          const sourceRecords = prepared.trimRecords.length
+            ? prepared.trimRecords
+            : [{
+                assetId: "",
+                originalName: finalImage.name,
+                originalByteLength: finalImage.size || 0
+              }];
+          for (const sourceRecord of sourceRecords) {
+            const sourceKey = [
+              sourceRecord.assetId || "",
+              sourceRecord.originalName || finalImage.name,
+              sourceRecord.originalByteLength || 0
+            ].join("::");
+            if (!report.sourceAssets.has(sourceKey)) {
+              report.sourceAssets.add(sourceKey);
+              report.originalTotalImageBytes +=
+                sourceRecord.originalByteLength || 0;
+            }
           }
-          const anchor = rangeToTwoCellAnchor(
+          const containedAnchor = inspectionContainedTwoCellAnchor(
             worksheet,
-            targetRange
+            targetRange,
+            prepared.canvasWidth,
+            prepared.canvasHeight
           );
+          const anchor = containedAnchor.anchor;
           worksheet.addImage(imageId, anchor);
           item.finalMimeType = prepared.mimeType;
           item.finalByteLength = prepared.finalByteLength;
@@ -2323,6 +3398,46 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           item.canvasHeight = prepared.canvasHeight;
           item.editAs = anchor.editAs;
           item.anchor = anchor;
+          item.outputWidth = containedAnchor.placement.width;
+          item.outputHeight = containedAnchor.placement.height;
+          item.marginPx = containedAnchor.placement.marginPx;
+          item.aspectRatioError = containedAnchor.placement.ratioError;
+          item.autoTrim = prepared.trimRecords.map(record =>
+            inspectionTrimDiagnostic(
+              slot,
+              record.assetId || "",
+              record
+            )
+          );
+          item.autoTrimApplied = item.autoTrim.some(
+            record => record.autoTrimApplied
+          );
+          item.trimConfidence = item.autoTrim.length
+            ? Math.max(...item.autoTrim.map(record => record.trimConfidence))
+            : 0;
+          item.removedLeft = item.autoTrim.reduce(
+            (total, record) => total + record.removedLeft,
+            0
+          );
+          item.removedTop = item.autoTrim.reduce(
+            (total, record) => total + record.removedTop,
+            0
+          );
+          item.removedRight = item.autoTrim.reduce(
+            (total, record) => total + record.removedRight,
+            0
+          );
+          item.removedBottom = item.autoTrim.reduce(
+            (total, record) => total + record.removedBottom,
+            0
+          );
+          item.removedAreaRatio = item.autoTrim.length
+            ? item.autoTrim.reduce(
+                (total, record) => total + record.removedAreaRatio,
+                0
+              ) / item.autoTrim.length
+            : 0;
+          report.trimDiagnostics.push(...item.autoTrim);
           item.mediaReused = mediaCache.get(mediaKey) === imageId &&
             report.insertedImages.some(entry => entry.imageId === imageId);
           item.insertionStatus = "inserted";
@@ -2342,6 +3457,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             `${prepared.canvasWidth} x ${prepared.canvasHeight}`
           );
           console.log("Embedded bytes:", prepared.finalByteLength);
+          console.log("Auto-trim diagnostics:", item.autoTrim);
           console.groupEnd();
           prepared.release();
           return item;
@@ -2699,10 +3815,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
                       event.stopPropagation();
                       onCrop(assignedImage, slot);
                     },
-                    children: mt.jsx("img", {
-                      src: assignedImage.previewUrl,
+                    children: mt.jsx(inspectionEffectiveAssignedImage, {
+                      image: assignedImage,
+                      slot,
                       alt: label,
-                      draggable: false,
                       onLoad: metadata.onLoad
                     })
                   }),
@@ -2730,22 +3846,73 @@ https://github.com/nodeca/pako/blob/main/LICENSE
                             onClick: () => onCrop(assignedImage, slot)
                           }),
                           inspectionActionButton({
+                            label:
+                              assignedImage.file.__inspectionAutoTrimEnabled === false
+                                ? "Auto-trim border"
+                                : "Restore original border",
+                            title:
+                              assignedImage.file.__inspectionAutoTrimEnabled === false
+                                ? "Auto-trim border"
+                                : "Restore original border",
+                            icon:
+                              assignedImage.file.__inspectionAutoTrimEnabled === false
+                                ? "\u25a3"
+                                : "\u25a1",
+                            onClick: () => onReplace?.(
+                              assignedImage.id,
+                              inspectionFileWithAutoTrimSetting(
+                                assignedImage,
+                                assignedImage.file.__inspectionAutoTrimEnabled === false
+                              )
+                            )
+                          }),
+                          assignedImage.file.__inspectionOriginalFile &&
+                            inspectionActionButton({
+                              label: "Restore original image",
+                              title: "Restore original image",
+                              icon: "\u27f2",
+                              onClick: () => onReplace?.(
+                                assignedImage.id,
+                                inspectionRestoreOriginalFile(assignedImage)
+                              )
+                            }),
+                          inspectionActionButton({
                             label: "Rotate image left",
                             title: copy.rotateLeft,
                             icon: "\u21b6",
-                            onClick: async () => onReplace?.(
-                              assignedImage.id,
-                              await rotateImageFile(assignedImage, -90)
-                            )
+                            onClick: async () => {
+                              const file = await rotateImageFile(
+                                assignedImage,
+                                -90
+                              );
+                              onReplace?.(
+                                assignedImage.id,
+                                inspectionMarkRotation(
+                                  file,
+                                  assignedImage,
+                                  -90
+                                )
+                              );
+                            }
                           }),
                           inspectionActionButton({
                             label: "Rotate image right",
                             title: copy.rotateRight,
                             icon: "\u21b7",
-                            onClick: async () => onReplace?.(
-                              assignedImage.id,
-                              await rotateImageFile(assignedImage, 90)
-                            )
+                            onClick: async () => {
+                              const file = await rotateImageFile(
+                                assignedImage,
+                                90
+                              );
+                              onReplace?.(
+                                assignedImage.id,
+                                inspectionMarkRotation(
+                                  file,
+                                  assignedImage,
+                                  90
+                                )
+                              );
+                            }
                           }),
                           inspectionActionButton({
                             label: "Remove image",
@@ -2987,10 +4154,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
                         event.stopPropagation();
                         onCrop(image, slot);
                       },
-                      children: mt.jsx("img", {
-                        src: image.previewUrl,
-                        alt: "",
-                        draggable: false
+                      children: mt.jsx(inspectionEffectiveAssignedImage, {
+                        image,
+                        slot,
+                        alt: ""
                       })
                     }, assetKey))
                   : mt.jsx("span", {
@@ -3013,12 +4180,17 @@ https://github.com/nodeca/pako/blob/main/LICENSE
                     type: "button",
                     "aria-label": `Rotate ${definition.displayName} right`,
                     title: "Rotate right",
-                    onClick: async event => {
-                      event.stopPropagation();
-                      onReplace(
-                        first.image.id,
-                        await rotateImageFile(first.image, 90)
-                      );
+                      onClick: async event => {
+                        event.stopPropagation();
+                        const file = await rotateImageFile(first.image, 90);
+                        onReplace(
+                          first.image.id,
+                          inspectionMarkRotation(
+                            file,
+                            first.image,
+                            90
+                          )
+                        );
                     },
                     children: "\u21b7"
                   }),
@@ -3500,6 +4672,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
               value: true,
               configurable: true
             });
+            Object.defineProperty(file, "__inspectionManualCropData", {
+              value: { ...crop, units: "percent" },
+              configurable: true
+            });
+            inspectionAttachImageLineage(file, image);
             onApply(file);
           } finally {
             setBusy(false);
@@ -3515,6 +4692,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
               value: true,
               configurable: true
             });
+            inspectionMarkRotation(file, image, degrees);
             onReplace?.(image.id, file);
             setCrop({ x: 0, y: 0, width: 100, height: 100 });
             setPreset("free");
@@ -3743,6 +4921,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           () => new Map(images.map(image => [image.id, image])),
           [images]
         );
+        const replaceImage = (imageId, file) => {
+          const previous = imageMap.get(imageId);
+          inspectionAttachImageLineage(file, previous);
+          onCropImage(imageId, file);
+        };
         Et.useEffect(() => {
           const registry =
             window.__inspectionCombinedAssetRegistry ||
@@ -4010,7 +5193,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
                         onDragEnter: setActiveAssetKey,
                         onDragLeave: () => setActiveAssetKey(null),
                         onDrop: dropOnTarget,
-                        onReplace: onCropImage,
+                        onReplace: replaceImage,
                         viewMode,
                         collapsed: !!collapsedSections[sectionKey],
                         bomCollapsed: !!collapsedBom[sectionKey],
@@ -4122,9 +5305,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
               slot: cropSlot,
               copy,
               onCancel: closeCrop,
-              onReplace: onCropImage,
+              onReplace: replaceImage,
               onApply: file => {
-                onCropImage(cropImage.id, file);
+                replaceImage(cropImage.id, file);
                 closeCrop();
               }
             }),
@@ -4144,6 +5327,22 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         .export-controls__clear { display: none !important; }
         .asset-target__preview img,
         .image-thumb img { object-fit: contain !important; }
+        .asset-preview__image { position: relative; }
+        .asset-preview__trimmed-badge {
+          position: absolute;
+          left: 4px;
+          bottom: 4px;
+          z-index: 2;
+          max-width: calc(100% - 8px);
+          padding: 2px 5px;
+          border-radius: 999px;
+          background: rgba(23, 92, 66, 0.88);
+          color: #fff;
+          font-size: 8px;
+          font-weight: 700;
+          line-height: 1.2;
+          pointer-events: none;
+        }
         .workspace__layout {
           display: grid;
           grid-template-columns: minmax(0, 1fr) 310px !important;
@@ -6531,6 +7730,14 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
               image.onerror = () => reject(new Error(`Could not decode ${record.filename}.`));
               image.src = objectUrl;
             });
+            const trim = await autoTrimOuterBackground({
+              source: image,
+              enabled: DEFAULT_AUTO_TRIM_OUTER_BACKGROUND,
+              aggressive: true,
+            });
+            trim.originalByteLength = blob.size;
+            trim.originalName = record.filename;
+            const effectiveImage = trim.canvas;
             const canvas = document.createElement("canvas");
             canvas.width = 900;
             canvas.height = 614;
@@ -6539,17 +7746,17 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
             context.fillStyle = "#ffffff";
             context.fillRect(0, 0, canvas.width, canvas.height);
             const contain = window.InspectionWorkbookImages.calculateContainRect({
-              sourceWidth: image.naturalWidth,
-              sourceHeight: image.naturalHeight,
+              sourceWidth: effectiveImage.width,
+              sourceHeight: effectiveImage.height,
               targetWidth: canvas.width,
               targetHeight: canvas.height,
               allowUpscale: true,
-              marginRatio: 0.02,
+              marginRatio: TARGET_CONTAIN_MARGIN_RATIO,
             });
             context.imageSmoothingEnabled = true;
             context.imageSmoothingQuality = "high";
             context.drawImage(
-              image,
+              effectiveImage,
               contain.x,
               contain.y,
               contain.width,
@@ -6570,6 +7777,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
               extension: "jpeg",
               originalByteLength: blob.size,
               finalByteLength: buffer.byteLength,
+              trim,
             };
           } finally {
             URL.revokeObjectURL(objectUrl);
@@ -6692,6 +7900,15 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
                       report.sourceAssets.add(sourceKey);
                       report.originalTotalImageBytes += prepared.originalByteLength;
                     }
+                  }
+                  if (report?.trimDiagnostics) {
+                    report.trimDiagnostics.push(
+                      inspectionTrimDiagnostic(
+                        { id: "master-carton-reference" },
+                        picture.filename,
+                        prepared.trim,
+                      ),
+                    );
                   }
                   const targetRange =
                     `${sheet.getColumn(startColumn).letter}${row}:` +
