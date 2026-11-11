@@ -480,7 +480,7 @@ Write-Log "  Sibling path: $siblingWeeklyBomDir (found: $siblingDiscoverySucceed
 Write-Log "  Configured override: $(if($configuredWeeklyBomFolder){$configuredWeeklyBomFolder}else{'[None]'})"
 Write-Log "  Resolved BOM directory: $(if($resolvedWeeklyBomDir){$resolvedWeeklyBomDir}else{'[None]'})"
 
-$masterCartonPictureFolderName = 'Master_Carton_Pics'
+$masterCartonPictureFolderName = 'master-carton-pictures'
 if ($config.ContainsKey('Search') -and
     $config['Search'].ContainsKey('MasterCartonPictureFolder') -and
     $config['Search']['MasterCartonPictureFolder']) {
@@ -492,9 +492,30 @@ if ($resolvedWeeklyBomDir) {
   if ([System.IO.Path]::IsPathRooted($masterCartonPictureFolderName)) {
     $resolvedMasterCartonPictureDir = $masterCartonPictureFolderName
   } else {
-    $resolvedMasterCartonPictureDir = [System.IO.Path]::GetFullPath(
-      (Join-Path $resolvedWeeklyBomDir $masterCartonPictureFolderName)
-    )
+    # The picture library travels beside the BOM workbooks. Prefer the deployed
+    # folder name, while accepting the older development name for compatibility.
+    $pictureFolderNames = @(
+      $masterCartonPictureFolderName,
+      'master-carton-pictures',
+      'Master_Carton_Pics'
+    ) | Select-Object -Unique
+    foreach ($pictureFolderName in $pictureFolderNames) {
+      $pictureFolderCandidate = [System.IO.Path]::GetFullPath(
+        (Join-Path $resolvedWeeklyBomDir $pictureFolderName)
+      )
+      if (Test-Path -LiteralPath $pictureFolderCandidate -PathType Container) {
+        $resolvedMasterCartonPictureDir = $pictureFolderCandidate
+        if ($pictureFolderName -ne $masterCartonPictureFolderName) {
+          Write-Log "Master-carton picture folder fallback selected: $pictureFolderName"
+        }
+        break
+      }
+    }
+    if (-not $resolvedMasterCartonPictureDir) {
+      $resolvedMasterCartonPictureDir = [System.IO.Path]::GetFullPath(
+        (Join-Path $resolvedWeeklyBomDir $masterCartonPictureFolderName)
+      )
+    }
   }
 }
 Write-Log "  Master-carton pictures: $(if($resolvedMasterCartonPictureDir){$resolvedMasterCartonPictureDir}else{'[None]'})"
