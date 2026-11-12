@@ -1,0 +1,32 @@
+WAHL Vietnam - Inspection Standard Tool
+Có gì mới / What's new
+=======================
+
+1. LỐI TẮT NGOÀI DESKTOP / DESKTOP SHORTCUT
+   Lần đầu trên mỗi máy: nhấp đúp "Launch Inspection Standard Tool.cmd" trong thư mục
+   này. Công cụ tự tạo lối tắt "Inspection Standard Tool" ngoài Desktop, trỏ đúng vào
+   bản OneDrive trên máy đó. Từ lần sau chỉ cần mở lối tắt, không còn cửa sổ đen.
+   First run on each PC: double-click "Launch Inspection Standard Tool.cmd" in this
+   folder. It creates the desktop shortcut "Inspection Standard Tool" pointing at this
+   PC's OneDrive copy. From then on open the shortcut; no console window appears.
+
+2. HỎI TRƯỚC KHI CẬP NHẬT DỮ LIỆU / UPDATE-DATA PROMPT
+   Khi file BOM hằng tuần thay đổi, công cụ hỏi:
+     - Cập nhật (khuyên dùng): đọc BOM mới, mất vài phút, có cửa sổ tiến trình.
+     - Bỏ qua: mở ngay với dữ liệu của lần trước.
+     - Không chọn gì: sau 30 giây tự cập nhật.
+   Khi BOM không đổi, công cụ mở ngay, không hỏi.
+   When the weekly BOM changed the tool asks Update (recommended, a few minutes, with a
+   progress window) or Skip (open at once with last run's data); no answer in 30 s =
+   update. When nothing changed it opens straight away without asking.
+
+   Tuỳ chỉnh / settings - system\config.ini (hoặc config.local.ini cho riêng máy này):
+     [Launcher] UpdateData=ask | always | skip | daily | weekly
+   Dòng lệnh / command line: "Launch Inspection Standard Tool.cmd" --update | --skip-update
+
+3. KHÔNG CÀI GÌ THÊM / NOTHING TO INSTALL
+   Vẫn chạy từ thư mục này bằng Windows PowerShell và Chrome/Edge có sẵn.
+   Still runs from this folder with the PowerShell and Chrome/Edge already on the PC.
+
+Xem clip hướng dẫn / tutorial clip: "03_Huong_dan_Inspection_Standard_Tool.mp4"
+(cùng thư mục "5. Tools for NPI").

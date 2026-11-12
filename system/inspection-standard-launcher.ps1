@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 
 # === Schema versions ===
 $CacheSchemaVersion = '3.0'
@@ -9,6 +9,9 @@ $ReferenceIndexVersion = '1.0'
 $forceRebuild   = $args -contains '--force-rebuild'
 $clearCache     = $args -contains '--clear-cache'
 $prepareOnly    = $args -contains '--prepare-only'
+$updateArg      = $args -contains '--update'        # rebuild the BOM data without asking
+$skipUpdateArg  = $args -contains '--skip-update'   # open straight away with the data from the last run
+$headless       = ($env:IST_HEADLESS -eq '1')        # started by Start-InspectionStandardTool.ps1: no console window
 
 # === Root detection ===
 $ScriptDirectory = $PSScriptRoot
@@ -68,7 +71,7 @@ Write-Log "=== Inspection Standard Tool Launcher v$CacheSchemaVersion (parser v$
 Write-Log "Script Directory: $ScriptDirectory"
 Write-Log "Application Root: $AppRoot"
 Write-Log "Tools Parent: $ToolsParent"
-Write-Log "Arguments: forceRebuild=$forceRebuild, clearCache=$clearCache, prepareOnly=$prepareOnly"
+Write-Log "Arguments: forceRebuild=$forceRebuild, clearCache=$clearCache, prepareOnly=$prepareOnly, update=$updateArg, skipUpdate=$skipUpdateArg, headless=$headless"
 
 # === Embedded C# XLSX reader (shared from Master Carton launcher) ===
 Add-Type -AssemblyName System.IO.Compression
@@ -315,6 +318,146 @@ function Get-BomMappedAssetKeys {
     @('colorboxes_packed_mastercarton','mastercarton_left','mastercarton_right','mastercarton_top','mastercarton_bottom','mastercarton_front','mastercarton_back') | ForEach-Object { $keys.Add($_) }
   }
   return (($keys | Select-Object -Unique) -join ';')
+}
+
+# ---------------------------------------------------------------------------------------------------------------
+# Update data? Reading the weekly BOM workbook and rebuilding the prepared data is the slow part of a launch
+# (several minutes when the BOM Level reference index must be rebuilt). When data from an earlier run is on
+# disk the technician can bypass it and open the tool straight away (same mechanism as the Master Carton Fit Tool).
+#   --update / --skip-update                        command line, no dialog
+#   config(.local).ini [Launcher] UpdateData=ask|always|skip|daily|weekly   (default: ask)
+#     ask    - show the Update / Skip dialog, but only when a rebuild is actually needed
+#     always - rebuild whenever the workbook changed, never ask
+#     skip   - never rebuild while old data exists (use --update or --force-rebuild to refresh)
+#     daily  - at most one rebuild per day; weekly - at most one per 7 days
+#   --force-rebuild / --clear-cache / --prepare-only never ask.
+# ---------------------------------------------------------------------------------------------------------------
+function Get-LauncherSetting {
+  param([string]$Name)
+  foreach ($file in @('config.local.ini', 'config.ini')) {
+    $iniPath = Join-Path $systemDir $file
+    if (-not (Test-Path -LiteralPath $iniPath)) { continue }
+    $ini = Read-IniFile -FilePath $iniPath
+    if ($ini.ContainsKey('Launcher') -and $ini['Launcher'].ContainsKey($Name) -and $ini['Launcher'][$Name]) { return [string]$ini['Launcher'][$Name] }
+  }
+  return ''
+}
+
+function Show-UpdateDataDialog {
+  param([string]$InfoText, [int]$TimeoutSeconds = 30, [string]$TimeoutChoice = 'update')
+  Add-Type -AssemblyName System.Windows.Forms
+  Add-Type -AssemblyName System.Drawing
+  [System.Windows.Forms.Application]::EnableVisualStyles()
+  $form = New-Object System.Windows.Forms.Form
+  $form.Text = 'Inspection Standard Tool - cập nhật dữ liệu? / update data?'
+  $form.StartPosition = 'CenterScreen'
+  $form.FormBorderStyle = 'FixedDialog'
+  $form.MaximizeBox = $false
+  $form.MinimizeBox = $false
+  $form.TopMost = $true
+  $form.ShowInTaskbar = $true
+  $form.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+  $form.ClientSize = New-Object System.Drawing.Size(560, 300)
+  try { $form.Icon = New-Object System.Drawing.Icon (Join-Path $systemDir 'assets\inspection_standard_tool.ico') } catch { }
+
+  $heading = New-Object System.Windows.Forms.Label
+  $heading.Text = 'Cập nhật dữ liệu BOM từ file Excel trước khi mở?' + "`r`n" + 'Update the BOM data from the Excel workbook first?'
+  $heading.Font = New-Object System.Drawing.Font('Segoe UI', 10.5, [System.Drawing.FontStyle]::Bold)
+  $heading.Location = New-Object System.Drawing.Point(16, 12)
+  $heading.Size = New-Object System.Drawing.Size(528, 44)
+  $form.Controls.Add($heading)
+
+  $info = New-Object System.Windows.Forms.Label
+  $info.Text = $InfoText
+  $info.Location = New-Object System.Drawing.Point(16, 60)
+  $info.Size = New-Object System.Drawing.Size(528, 150)
+  $form.Controls.Add($info)
+
+  $btnUpdate = New-Object System.Windows.Forms.Button
+  $btnUpdate.Text = 'Cập nhật (khuyên dùng)' + "`r`n" + 'Update (recommended)'
+  $btnUpdate.Location = New-Object System.Drawing.Point(16, 218)
+  $btnUpdate.Size = New-Object System.Drawing.Size(190, 44)
+  $btnUpdate.DialogResult = [System.Windows.Forms.DialogResult]::Yes
+  $form.Controls.Add($btnUpdate)
+
+  $btnSkip = New-Object System.Windows.Forms.Button
+  $btnSkip.Text = 'Bỏ qua - mở với dữ liệu cũ' + "`r`n" + 'Skip - open with current data'
+  $btnSkip.Location = New-Object System.Drawing.Point(214, 218)
+  $btnSkip.Size = New-Object System.Drawing.Size(230, 44)
+  $btnSkip.DialogResult = [System.Windows.Forms.DialogResult]::No
+  $form.Controls.Add($btnSkip)
+
+  $btnCancel = New-Object System.Windows.Forms.Button
+  $btnCancel.Text = 'Hủy' + "`r`n" + 'Cancel'
+  $btnCancel.Location = New-Object System.Drawing.Point(452, 218)
+  $btnCancel.Size = New-Object System.Drawing.Size(92, 44)
+  $btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+  $form.Controls.Add($btnCancel)
+
+  $countdown = New-Object System.Windows.Forms.Label
+  $countdown.Location = New-Object System.Drawing.Point(16, 270)
+  $countdown.Size = New-Object System.Drawing.Size(528, 24)
+  $countdown.ForeColor = [System.Drawing.Color]::DimGray
+  $form.Controls.Add($countdown)
+
+  $form.AcceptButton = $btnUpdate
+  $form.CancelButton = $btnCancel
+
+  # Nobody at the keyboard? Carry on with the default after a while rather than hang.
+  # Any mouse or keyboard activity on the dialog means someone is there, so the countdown stops.
+  $state = @{ Remaining = $TimeoutSeconds }
+  $timer = New-Object System.Windows.Forms.Timer
+  $timer.Interval = 1000
+  $label = if ($TimeoutChoice -eq 'skip') { 'tự động bỏ qua / skipping automatically' } else { 'tự động cập nhật / updating automatically' }
+  $countdown.Text = "Không chọn sau $($state.Remaining) giây: $label."
+  $timer.Add_Tick({
+    $state.Remaining = $state.Remaining - 1
+    if ($state.Remaining -le 0) {
+      $timer.Stop()
+      $form.DialogResult = if ($TimeoutChoice -eq 'skip') { [System.Windows.Forms.DialogResult]::No } else { [System.Windows.Forms.DialogResult]::Yes }
+      $form.Close()
+    } else {
+      $countdown.Text = "Không chọn sau $($state.Remaining) giây: $label."
+    }
+  })
+  $stopCountdown = { $timer.Stop(); $countdown.Text = '' }
+  foreach ($control in @($form, $btnUpdate, $btnSkip, $btnCancel)) {
+    $control.Add_MouseEnter($stopCountdown)
+    $control.Add_KeyDown($stopCountdown)
+  }
+  $form.KeyPreview = $true
+  if ($TimeoutSeconds -gt 0) { $timer.Start() } else { $countdown.Text = '' }
+
+  $result = $form.ShowDialog()
+  $timer.Stop(); $timer.Dispose(); $form.Dispose()
+  switch ([string]$result) {
+    'Yes' { return 'update' }
+    'No' { return 'skip' }
+    default { return 'cancel' }
+  }
+}
+
+# Progress window for headless launches (no console to print to). Runs as its own process so the
+# launcher is never blocked; it closes itself when this process exits or the done-marker appears.
+$script:progressProcess = $null
+$script:progressDoneFile = Join-Path $logDir 'progress.done'
+function Start-ProgressWindow {
+  if (-not $headless -or $script:progressProcess) { return }
+  try {
+    if (Test-Path -LiteralPath $script:progressDoneFile) { Remove-Item -LiteralPath $script:progressDoneFile -Force -ErrorAction SilentlyContinue }
+    $pw = Join-Path $systemDir 'progress-window.ps1'
+    $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $pwArgs = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -STA -File "' + $pw + '" -LogPath "' + $logPath + '" -ParentPid ' + $PID + ' -DoneFile "' + $script:progressDoneFile + '"'
+    $script:progressProcess = Start-Process -FilePath $psExe -ArgumentList $pwArgs -WindowStyle Hidden -PassThru
+    Write-Log "Progress window started (PID $($script:progressProcess.Id))."
+  } catch { Write-Log "Progress window could not start: $($_.Exception.Message)" }
+}
+function Stop-ProgressWindow {
+  if (-not $script:progressProcess) { return }
+  try { Set-Content -LiteralPath $script:progressDoneFile -Value 'done' -Encoding ASCII } catch { }
+  try { Start-Sleep -Milliseconds 900; if (-not $script:progressProcess.HasExited) { $script:progressProcess.Kill() } } catch { }
+  try { Remove-Item -LiteralPath $script:progressDoneFile -Force -ErrorAction SilentlyContinue } catch { }
+  $script:progressProcess = $null
 }
 
 # === Cache file paths ===
@@ -702,8 +845,86 @@ if ($selectedBom) {
   $rebuildReason = 'no BOM selected'
 }
 
+# === Update data? (skip the slow rebuild when the technician prefers the data from the last run) ===
+$skipUpdate = $false
+if ($rebuildNeeded -and $selectedBom -and -not $forceRebuild) {
+  $haveData = $true
+  foreach ($p in @($manifestPath, $preparedDataPath, $preparedCsvPath, $stagedWorkbookPath)) {
+    if (-not (Test-Path -LiteralPath $p) -or (Get-Item -LiteralPath $p).Length -eq 0) { $haveData = $false; break }
+  }
+  $prevState = @{}
+  if (Test-Path -LiteralPath $cacheStatePath) { try { $prevState = Read-IniFile -FilePath $cacheStatePath } catch { $prevState = @{} } }
+  $generatedLocal = $null
+  if ($prevState.ContainsKey('GeneratedOutput') -and $prevState['GeneratedOutput'].ContainsKey('GeneratedUtc') -and $prevState['GeneratedOutput']['GeneratedUtc']) {
+    try { $generatedLocal = ([datetime]::Parse($prevState['GeneratedOutput']['GeneratedUtc'], [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)).ToLocalTime() } catch { }
+  }
+  $mode = (Get-LauncherSetting 'UpdateData').ToLowerInvariant()
+  if (-not $mode) { $mode = 'ask' }
+
+  if ($updateArg) { Write-Log "Update data: --update given; updating without asking." }
+  elseif (-not $haveData) { Write-Log "Update data: no previous generated data found, so the update is required." }
+  elseif ($skipUpdateArg) { $skipUpdate = $true; Write-Log "Update data: skipped (--skip-update). Opening with the data from the last update." }
+  elseif ($prepareOnly) { Write-Log "Update data: --prepare-only; updating without asking." }
+  elseif ($mode -eq 'skip') { $skipUpdate = $true; Write-Log "Update data: skipped (UpdateData=skip). Opening with the data from the last update." }
+  elseif ($mode -eq 'always') { Write-Log "Update data: UpdateData=always; updating without asking." }
+  elseif ($mode -eq 'daily' -or $mode -eq 'weekly') {
+    $dueDays = if ($mode -eq 'daily') { 1 } else { 7 }
+    if ($rebuildReason -match 'version') { Write-Log "Update data: UpdateData=$mode; updating because $rebuildReason." }
+    elseif (-not $generatedLocal) { Write-Log "Update data: UpdateData=$mode; updating because the date of the last update is unknown." }
+    else {
+      $daysSince = [int]((Get-Date).Date - $generatedLocal.Date).TotalDays
+      if ($daysSince -ge $dueDays) { Write-Log "Update data: UpdateData=$mode; updating because the last update was $daysSince day(s) ago." }
+      else { $skipUpdate = $true; Write-Log "Update data: UpdateData=$mode; skipped because the last update was $($generatedLocal.ToString('yyyy-MM-dd HH:mm')). Opening with the data from the last update." }
+    }
+  }
+  else {
+    # Describe what is on disk so the choice is an informed one (Vietnamese first, English second).
+    $lines = New-Object System.Collections.Generic.List[string]
+    if ($generatedLocal) {
+      $age = (Get-Date) - $generatedLocal
+      $ageVi = if ($age.TotalHours -lt 1) { 'chưa đầy 1 giờ trước' } elseif ($age.TotalDays -lt 1) { "$([int]$age.TotalHours) giờ trước" } else { "$([int]$age.TotalDays) ngày trước" }
+      $lines.Add("Dữ liệu cập nhật lần cuối / data last updated: $($generatedLocal.ToString('yyyy-MM-dd HH:mm')) ($ageVi).")
+    } else { $lines.Add('Dữ liệu cập nhật lần cuối / data last updated: không rõ / unknown.') }
+    $prevName = ''
+    if ($prevState.ContainsKey('BomWorkbook') -and $prevState['BomWorkbook'].ContainsKey('SourceFileName')) { $prevName = $prevState['BomWorkbook']['SourceFileName'] }
+    $lines.Add("BOM hiện có trong thư mục / BOM in the folder: $selectedBomName")
+    if ($prevName -and $prevName -ne $selectedBomName) { $lines.Add("BOM của dữ liệu đã lưu / BOM of the saved data: $prevName") }
+    $reasonVi = switch -Regex ($rebuildReason) {
+      'path changed'               { 'file BOM đã đổi vị trí hoặc đổi tên'; break }
+      'size changed|modified time' { 'file BOM đã thay đổi'; break }
+      'version'                    { 'phiên bản công cụ mới hơn dữ liệu đã lưu'; break }
+      'reference'                  { 'file BOM Level tham chiếu đã thay đổi'; break }
+      'missing|empty|state'        { 'thiếu file dữ liệu đã tạo'; break }
+      default                      { $rebuildReason }
+    }
+    $lines.Add("Lý do cần cập nhật / reason: $reasonVi ($rebuildReason).")
+    $lines.Add('')
+    $lines.Add('Cập nhật mất vài phút. Bỏ qua sẽ mở ngay nhưng thay đổi mới trong BOM sẽ chưa hiện.')
+    $lines.Add('Updating takes a few minutes. Skipping opens at once; new BOM changes will not show yet.')
+    $choice = 'update'
+    try { $choice = Show-UpdateDataDialog -InfoText ($lines -join "`r`n") }
+    catch { Write-Log "Update data: could not show the dialog ($($_.Exception.Message)); updating." }
+    if ($choice -eq 'cancel') { Write-Log "Update data: cancelled by the user. Nothing was opened."; exit 0 }
+    if ($choice -eq 'skip') { $skipUpdate = $true; Write-Log "Update data: skipped by the user. Opening with the data from the last update." }
+    else { Write-Log "Update data: the user chose to update." }
+  }
+
+  if ($skipUpdate) {
+    # Reuse what is on disk; describe it from the cache state so the manifest keeps pointing at the staged workbook.
+    $rebuildNeeded = $false
+    $cacheStatus = 'stale'
+    if ($prevState.ContainsKey('BomWorkbook')) {
+      $pb = $prevState['BomWorkbook']
+      if ($pb.ContainsKey('Hash')) { $sourceHash = $pb['Hash'] }
+      if ($pb.ContainsKey('SourceFileName') -and $pb['SourceFileName']) { $selectedBomName = $pb['SourceFileName'] }
+      if ($pb.ContainsKey('LastWriteTimeUtc') -and $pb['LastWriteTimeUtc']) { $selectedBomModifiedUtc = $pb['LastWriteTimeUtc'] }
+    }
+  }
+}
+
 # === Rebuild (if needed) ===
 if ($rebuildNeeded -and $selectedBom) {
+  Start-ProgressWindow
   Write-Log "Phase: Rebuilding prepared BOM data (reason: $rebuildReason)"
   Write-Log "BOM cache is stale or missing. Rebuilding prepared BOM data."
 
@@ -1108,8 +1329,8 @@ if ($rebuildNeeded -and $selectedBom) {
   Set-Content -Encoding UTF8 -LiteralPath $manifestPath -Value $emptyManifest
   Set-Content -Encoding UTF8 -LiteralPath $legacyManifestPath -Value '[]'
 } else {
-  # Cache is fresh — reuse existing; just update legacy manifest
-  Write-Log "Cache is fresh. Skipping all preparation."
+  # Cache is fresh (or the update was skipped) — reuse existing; just update legacy manifest
+  Write-Log "Cache status: $cacheStatus. Skipping all preparation."
 
   if (Test-Path -LiteralPath $manifestPath) {
     try { $manifestData = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json } catch {}
@@ -1276,6 +1497,8 @@ Write-Log "  Picture records: $($pictureRecords.Count)"
 Write-Log "  Picture carton IDs: $cartonIdCount"
 $totalDuration = [math]::Round(((Get-Date) - $script:logStart).TotalSeconds, 1)
 Write-Log "  Total launcher duration: ${totalDuration}s"
+
+Stop-ProgressWindow
 
 # === Detect browser ===
 $browser = $null

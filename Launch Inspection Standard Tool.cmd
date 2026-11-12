@@ -1,15 +1,37 @@
 @echo off
+rem This window only exists for a moment. It hands straight over to
+rem system\Start-InspectionStandardTool.ps1 running in a HEADLESS console host
+rem (conhost.exe --headless), which has no window at all, and closes.
+rem On the first run on a PC that script also creates the desktop shortcut
+rem "Inspection Standard Tool" for this PC's copy of the folder; after that,
+rem start the tool from the shortcut and no window appears even briefly.
+rem
+rem Arguments are passed through to the launcher, e.g.
+rem   --update        rebuild the BOM data without asking
+rem   --skip-update   open at once with the data from the last run
+rem   --force-rebuild / --clear-cache / --prepare-only
+rem
+rem No parenthesised IF blocks below on purpose: a folder name containing ")"
+rem (OneDrive paths sometimes do) would end such a block early.
 setlocal
-pushd "%~dp0"
+set "SYS=%~dp0system"
+set "PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+set "HOST=%SystemRoot%\System32\conhost.exe"
 
-echo Preparing Inspection Standard Tool data...
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0system\inspection-standard-launcher.ps1" %*
+if not exist "%SYS%\Start-InspectionStandardTool.ps1" goto missing
+if not exist "%HOST%" goto nohost
 
-if errorlevel 1 (
-  echo.
-  echo Inspection Standard Tool preparation failed.
-  echo Review system\logs\Inspection_Standard_Tool_launcher.log.
-  pause
-)
+start "" "%HOST%" --headless "%PS%" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%SYS%\Start-InspectionStandardTool.ps1" %*
+exit /b 0
 
-popd
+:nohost
+rem Windows older than 10 (1809): no headless host, fall back to a hidden,
+rem minimised PowerShell.
+start "" /min "%PS%" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%SYS%\Start-InspectionStandardTool.ps1" %*
+exit /b 0
+
+:missing
+echo Could not find system\Start-InspectionStandardTool.ps1 next to this file.
+echo Keep this file inside the tool folder, next to the "system" folder.
+pause
+exit /b 1

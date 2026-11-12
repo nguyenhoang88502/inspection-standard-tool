@@ -3,3 +3,4 @@ system/generated/
 system/logs/
 system/tmp-relocation-test/
 system/tmp-template-audit/
+system/config.local.ini
